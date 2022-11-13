@@ -10,7 +10,11 @@ import enum
 import os
 import random
 import time
+import datetime
+
 from concurrent import futures
+from threading import Thread
+from multiprocessing import Lock
 
  # Constants 
 
@@ -39,13 +43,12 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     timer = None
     state = None
 
+    id = None
     host = '127.0.0.1'
     port = '5001'
 
     servers = {} # {id : (ipaddr:port)}
     servers_number = None
-
-    config_path = 'config.conf'
 
     # Config
 
@@ -54,9 +57,21 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     should_update_timer = False
 
+    votes_number = 0
+
     leader_id = 0
 
+    # Constants 
+
+    SERVER_TIMEOUT = 0.5
+    CONFIG_PATH = 'config.conf'
+
     # Threads
+
+    leader_election_mutex = Lock()
+
+    server_time = 0
+    timer_thread = None
 
     # Init
 
@@ -67,9 +82,13 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         self.timer = random.randint(150, 301)
         self.state = State.follower
         
-        self._fetch_servers_info(self.config_path)
+        self._fetch_servers_info(self.CONFIG_PATH)
         self.servers_number = len(self.servers)
+        self.id = id
         self.host, self.port = self.servers[int(id)]
+
+        self.timer_thread = Thread(target=self._start_timer_thread, args=(), daemon=True)
+        self.timer_thread.start()
 
     # Public Methods
     
@@ -78,6 +97,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             return
 
         self.should_update_timer = True
+        print(f'Request from candidate with id = {request.candidate_id}')
 
         if self.term < request.term:
             self.is_voted_at_this_term = False
@@ -138,6 +158,115 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                     self.servers[int(conf_id)] = (ipaddr, port)
         except Exception as e:
             terminate(f'Unable to open/parse {path} file:\n{e}')
+
+    def _start_timer_thread(self):
+        time_start = datetime.datetime.now()
+        while True:
+            if self.is_suspended:
+                continue
+
+            if self.should_update_timer:
+                self.should_update_timer = False
+                time_start = datetime.datetime.now()
+                continue
+
+            if (datetime.datetime.now() - time_start).total_seconds <= self.timer:
+                continue
+
+            if self.state == State.follower:
+                self.state = State.candidate
+                self.term += 1
+
+                self._start_leader_election()
+
+            elif self.state == State.candidate:
+                # MARK: Maybe useless, double check needed
+                if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
+                    self.should_update_timer = True
+                    self.state = State.leader
+
+                    print('I am the leader now')
+                else:
+                    self.timer = random.randint(150, 301)
+                    self.state = State.follower
+        
+            elif self.state == State.leader:
+                self.should_update_timer = True
+
+    # Election 
+
+    def _start_leader_election(self):
+        if self.is_suspended or self.state != State.candidate:
+            return
+
+        print("Start leader election procedure")
+
+        self.votes_number = 1
+
+        threads = []
+        for id, (ipaddr, port) in self.servers.items():
+            if id == self.id:
+                continue
+            
+            print(id)
+            threads.append(Thread(target=self._request_vote, args=(f'{ipaddr}:{port}',), daemon=True))
+
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+
+        print('Votes request completed')
+
+        if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
+            self.should_update_timer = True
+            self.state = State.leader
+
+            print('I am the leader now')
+
+    def _request_vote(self, socket_addr):
+        if self.is_suspended:
+            return
+
+        server_channel = grpc.insecure_channel(socket_addr)
+        try:
+            grpc.channel_ready_future(server_channel).result(timeout=self.SERVER_TIMEOUT)
+        except:
+            print(f"Server {socket_addr} is unavailable")
+            return
+        else:
+            server_stub = pb2_grpc.RaftServiceStub(server_channel)
+
+        message = pb2.VoteRequest(term=self.term, candidate_id=self.id)
+        try:
+            response = server_stub.request_vote(message, timeout = self.SERVER_TIMEOUT)
+
+            with self.leader_election_mutex:
+                print(f"Server {socket_addr} result is {response.result}")
+                if response.result:
+                    self.votes_number += 1
+                elif self.term < response.term:
+                    self.state = State.follower
+                    self.term = response.term
+
+        except Exception as e:
+            server_channel.close()
+            print(f"Server {socket_addr} is suspended", e)
+
+    # Heartbeat 
+    
+    def _send_hearbeat(self, socket_addr):
+        if self.is_suspended or self.state != State.leader:
+            return
+            
+        server_channel = grpc.insecure_channel(socket_addr)
+        server_stub = pb2_grpc.RaftServiceStub(server_channel)
+        message = pb2.AppendRequest(term=self.term, leader_id=self.id)
+        try:
+            response = server_stub.append_entries(message)
+        except:
+            server_channel.close()
+            print(f"The server {socket_addr} is unavailable")
+        return (response.term, response.success)
+
 
 def start_server(id):
     serverHandler = ServerHandler(id)

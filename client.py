@@ -13,6 +13,8 @@ SERVER_CONNECTION_TIMEOUT = 10
 
 # Config
 
+server_addr = '127.0.0.1'
+server_port = 50051
 server_channel = None
 server_stub = None
 
@@ -24,18 +26,30 @@ def terminate(message, closure=None):
         closure()
     sys.exit()
 
+def print_help():
+    print('Commands:')
+    print('connect <ipaddr> <port>')
+    print('getleader')
+    print('suspend <period>')
+    print('exit')
+
 # Client functions
 
 def connect(ipaddr, port):
     global server_channel
     global server_stub
+    global server_addr
+    global server_port
+
+    server_addr = ipaddr
+    server_port = port
 
     server_channel = grpc.insecure_channel(f"{ipaddr}:{port}")
     try:
         grpc.channel_ready_future(server_channel).result(timeout=SERVER_CONNECTION_TIMEOUT)
         server_stub = pb2_grpc.RaftServiceStub(server_channel)
     except grpc.FutureTimeoutError:
-        print(f"The server {ipaddr}:{port} is unavailable")
+        print(f"The server {server_addr}:{server_port} is unavailable")
         return
 
 
@@ -46,8 +60,12 @@ def get_leader():
         return
 
     message = pb2.EmptyMessage()
-    response = server_stub.get_leader(message)
-    print(f"{response.leader_id} {response.address}")
+
+    try: 
+        response = server_stub.get_leader(message)
+        print(f"{response.leader_id} {response.address}")
+    except:
+        print(f"The server {server_addr}:{server_port} is unavailable")
 
 
 def suspend(period):
@@ -57,7 +75,10 @@ def suspend(period):
         return
 
     message = pb2.SuspendRequest(period=int(period))
-    server_stub.suspend(message)
+    try:
+        server_stub.suspend(message)
+    except:
+        print(f"The server {server_addr}:{server_port} is unavailable")
 
 
 def start_client():
@@ -69,7 +90,7 @@ def start_client():
         arguments = client_input.split(' ', 1)[1::]
 
         # connect
-        if command == 'connect':
+        if command == 'connect' and len(arguments) == 2:
             ipaddr = arguments[0].split(' ')[0]
             port = arguments[0].split(' ')[1]
             connect(ipaddr, port)
@@ -77,15 +98,14 @@ def start_client():
         elif command == 'getleader':
             get_leader()
 
-        elif command == 'suspend':
+        elif command == 'suspend' and len(arguments) == 1:
             suspend(arguments[0])
 
         elif command == 'exit':
             terminate('The client ends')
 
         else:
-            print('Unknown command')
-            #print_help()
+            print_help()
 
 
 if __name__ == '__main__':
