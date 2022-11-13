@@ -88,9 +88,9 @@ def start_client():
 
         command = client_input.split(' ', 1)[0]
         arguments = client_input.split(' ', 1)[1::]
-
+        
         # connect
-        if command == 'connect' and len(arguments) == 2:
+        if command == 'connect' and len(arguments[0].split(' ')) == 2:
             ipaddr = arguments[0].split(' ')[0]
             port = arguments[0].split(' ')[1]
             connect(ipaddr, port)

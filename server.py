@@ -72,6 +72,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     server_time = 0
     timer_thread = None
+    leader_thread = None 
 
     # Init
 
@@ -79,13 +80,15 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         super().__init__()
         
         self.term = 0
-        self.timer = random.randint(150, 301)
+        self.timer = random.randint(700, 1001) # TODO: Change
         self.state = State.follower
         
         self._fetch_servers_info(self.CONFIG_PATH)
         self.servers_number = len(self.servers)
         self.id = id
         self.host, self.port = self.servers[int(id)]
+
+        self._print_state()
 
         self.timer_thread = Thread(target=self._start_timer_thread, args=(), daemon=True)
         self.timer_thread.start()
@@ -97,7 +100,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             return
 
         self.should_update_timer = True
-        print(f'Request from candidate with id = {request.candidate_id}')
+        # print(f'Request from candidate with id = {request.candidate_id}')
 
         if self.term < request.term:
             self.is_voted_at_this_term = False
@@ -117,38 +120,46 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             return
 
         self.should_update_timer = True
+        print(f'Heartbeat from leader with id = {request.leader_id}')
 
         success = self.term <= request.term
-        current_term = None
         if success:
-            current_term = request.term
+            self.term = request.term
             self.leader_id = request.leader_id
-        else:
-            current_term = self.term
 
-        self.term = current_term
-        return pb2.AppendReply(term=current_term, success=success)
+            if self.state != State.follower:
+                self.state = State.follower
+                self._print_state()
+
+        return pb2.AppendReply(term=self.term, success=success)
 
     def get_leader(self, request, context):
         if self.is_suspended:
             return
 
+        print('Command from client: getleader')
+
         leader_ipaddr, leader_port = self.servers[self.leader_id]
+        print(f'{self.leader_id} {leader_ipaddr}:{leader_port}')
+
         return pb2.GetLeaderReply(leader_id=self.leader_id, address=f'{leader_ipaddr}:{leader_port}')
 
     def suspend(self, request, context):
         if self.is_suspended:
             return
 
-        print("sleep")
+        print(f'Command from client: suspend {request.period}')
+        print(f'Sleeping for {request.period} seconds')
         self.is_suspended = True
         time.sleep(request.period)
         self.is_suspended = False
-        print("wake up")
 
         return pb2.EmptyMessage()
 
     # Private Methdos
+
+    def _print_state(self):
+        print(f'I am a {self.state.name}. Term: {self.term}')
 
     def _fetch_servers_info(self, path):
         try:
@@ -168,27 +179,30 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             if self.should_update_timer:
                 self.should_update_timer = False
                 time_start = datetime.datetime.now()
-                continue
 
-            if (datetime.datetime.now() - time_start).total_seconds <= self.timer:
+            if (datetime.datetime.now() - time_start).total_seconds() * 1000 <= self.timer:
                 continue
 
             if self.state == State.follower:
                 self.state = State.candidate
                 self.term += 1
+                self.is_voted_at_this_term = False
+
+                print('The leader is dead')
+                self._print_state()
 
                 self._start_leader_election()
 
             elif self.state == State.candidate:
                 # MARK: Maybe useless, double check needed
-                if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
-                    self.should_update_timer = True
-                    self.state = State.leader
-
-                    print('I am the leader now')
-                else:
-                    self.timer = random.randint(150, 301)
-                    self.state = State.follower
+                # if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
+                #     self.should_update_timer = True
+                #     self.state = State.leader
+                #     self._print_state()
+                    
+                # else:
+                self.timer = random.randint(700, 1001) # TODO: Change
+                self.state = State.follower
         
             elif self.state == State.leader:
                 self.should_update_timer = True
@@ -202,25 +216,28 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         print("Start leader election procedure")
 
         self.votes_number = 1
+        self.is_voted_at_this_term = True
 
         threads = []
         for id, (ipaddr, port) in self.servers.items():
-            if id == self.id:
-                continue
-            
-            print(id)
-            threads.append(Thread(target=self._request_vote, args=(f'{ipaddr}:{port}',), daemon=True))
+            if id != self.id:
+                threads.append(Thread(target=self._request_vote, args=(f'{ipaddr}:{port}',), daemon=True))
 
         [t.start() for t in threads]
         [t.join() for t in threads]
 
-        print('Votes request completed')
+        print('Votes received')
 
         if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
             self.should_update_timer = True
             self.state = State.leader
+            self.leader_id = self.id
 
-            print('I am the leader now')
+            self._print_state()
+
+            self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
+            self.leader_thread.start()
+
 
     def _request_vote(self, socket_addr):
         if self.is_suspended:
@@ -246,27 +263,57 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 elif self.term < response.term:
                     self.state = State.follower
                     self.term = response.term
+                    self._print_state
 
-        except Exception as e:
+        except:
             server_channel.close()
-            print(f"Server {socket_addr} is suspended", e)
 
     # Heartbeat 
+
+    def _start_leader_procedure(self):
+        while True:
+            if self.state != State.leader:
+                break
+
+            if self.is_suspended:
+                continue
+
+            self.should_update_timer = True
+
+            threads = []
+            for id, (ipaddr, port) in self.servers.items():
+                if id != self.id:
+                    threads.append(Thread(target=self._send_hearbeat, args=(f'{ipaddr}:{port}',), daemon=True))
+
+            [t.start() for t in threads]
+            [t.join() for t in threads]
+
+            time.sleep(0.05)
+
     
     def _send_hearbeat(self, socket_addr):
         if self.is_suspended or self.state != State.leader:
             return
             
         server_channel = grpc.insecure_channel(socket_addr)
-        server_stub = pb2_grpc.RaftServiceStub(server_channel)
+        try:
+            grpc.channel_ready_future(server_channel).result(timeout=self.SERVER_TIMEOUT)
+        except:
+            print(f"Server {socket_addr} is unavailable")
+            return
+        else:
+            server_stub = pb2_grpc.RaftServiceStub(server_channel)
+
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
-            response = server_stub.append_entries(message)
+            response = server_stub.append_entries(message, timeout = self.SERVER_TIMEOUT)
+
+            if self.term < response.term:
+                self.term = response.term
+                self.state = State.follower
+
         except:
             server_channel.close()
-            print(f"The server {socket_addr} is unavailable")
-        return (response.term, response.success)
-
 
 def start_server(id):
     serverHandler = ServerHandler(id)
