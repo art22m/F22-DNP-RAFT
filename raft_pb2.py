@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"0\n\x0bVoteRequest\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x13\n\x0b\x63\x61ndidateId\x18\x02 \x01(\x03\")\n\tVoteReply\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0e\n\x06result\x18\x02 \x01(\x08\"/\n\rAppendRequest\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08leaderId\x18\x02 \x01(\x03\",\n\x0b\x41ppendReply\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0f\n\x07success\x18\x02 \x01(\x08\"3\n\x0eGetLeaderReply\x12\x10\n\x08leaderId\x18\x01 \x01(\x03\x12\x0f\n\x07\x61\x64\x64ress\x18\x02 \x01(\t\" \n\x0eSuspendRequest\x12\x0e\n\x06period\x18\x01 \x01(\x03\"\x0e\n\x0c\x45mptyMessage2\xc5\x01\n\x0bRaftService\x12)\n\x0brequestVote\x12\x0c.VoteRequest\x1a\n.VoteReply\"\x00\x12/\n\rappendEntries\x12\x0e.AppendRequest\x1a\x0c.AppendReply\"\x00\x12-\n\tgetLeader\x12\r.EmptyMessage\x1a\x0f.GetLeaderReply\"\x00\x12+\n\x07suspend\x12\x0f.SuspendRequest\x1a\r.EmptyMessage\"\x00\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"1\n\x0bVoteRequest\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0c\x63\x61ndidate_id\x18\x02 \x01(\x03\")\n\tVoteReply\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0e\n\x06result\x18\x02 \x01(\x08\"0\n\rAppendRequest\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x11\n\tleader_id\x18\x02 \x01(\x03\",\n\x0b\x41ppendReply\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0f\n\x07success\x18\x02 \x01(\x08\"4\n\x0eGetLeaderReply\x12\x11\n\tleader_id\x18\x01 \x01(\x03\x12\x0f\n\x07\x61\x64\x64ress\x18\x02 \x01(\t\" \n\x0eSuspendRequest\x12\x0e\n\x06period\x18\x01 \x01(\x03\"\x0e\n\x0c\x45mptyMessage2\xc8\x01\n\x0bRaftService\x12*\n\x0crequest_vote\x12\x0c.VoteRequest\x1a\n.VoteReply\"\x00\x12\x30\n\x0e\x61ppend_entries\x12\x0e.AppendRequest\x1a\x0c.AppendReply\"\x00\x12.\n\nget_leader\x12\r.EmptyMessage\x1a\x0f.GetLeaderReply\"\x00\x12+\n\x07suspend\x12\x0f.SuspendRequest\x1a\r.EmptyMessage\"\x00\x62\x06proto3')
 
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, globals())
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'raft_pb2', globals())
@@ -21,19 +21,19 @@ if _descriptor._USE_C_DESCRIPTORS == False:
 
   DESCRIPTOR._options = None
   _VOTEREQUEST._serialized_start=14
-  _VOTEREQUEST._serialized_end=62
-  _VOTEREPLY._serialized_start=64
-  _VOTEREPLY._serialized_end=105
-  _APPENDREQUEST._serialized_start=107
-  _APPENDREQUEST._serialized_end=154
-  _APPENDREPLY._serialized_start=156
-  _APPENDREPLY._serialized_end=200
-  _GETLEADERREPLY._serialized_start=202
-  _GETLEADERREPLY._serialized_end=253
-  _SUSPENDREQUEST._serialized_start=255
-  _SUSPENDREQUEST._serialized_end=287
-  _EMPTYMESSAGE._serialized_start=289
-  _EMPTYMESSAGE._serialized_end=303
-  _RAFTSERVICE._serialized_start=306
-  _RAFTSERVICE._serialized_end=503
+  _VOTEREQUEST._serialized_end=63
+  _VOTEREPLY._serialized_start=65
+  _VOTEREPLY._serialized_end=106
+  _APPENDREQUEST._serialized_start=108
+  _APPENDREQUEST._serialized_end=156
+  _APPENDREPLY._serialized_start=158
+  _APPENDREPLY._serialized_end=202
+  _GETLEADERREPLY._serialized_start=204
+  _GETLEADERREPLY._serialized_end=256
+  _SUSPENDREQUEST._serialized_start=258
+  _SUSPENDREQUEST._serialized_end=290
+  _EMPTYMESSAGE._serialized_start=292
+  _EMPTYMESSAGE._serialized_end=306
+  _RAFTSERVICE._serialized_start=309
+  _RAFTSERVICE._serialized_end=509
 # @@protoc_insertion_point(module_scope)

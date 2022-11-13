@@ -3,9 +3,9 @@
 syntax = "proto3";
 
 service RaftService {
-    rpc requestVote(VoteRequest) returns (VoteReply) {}
-    rpc appendEntries(AppendRequest) returns (AppendReply) {}
-    rpc getLeader(EmptyMessage) returns (GetLeaderReply) {}
+    rpc request_vote(VoteRequest) returns (VoteReply) {}
+    rpc append_entries(AppendRequest) returns (AppendReply) {}
+    rpc get_leader(EmptyMessage) returns (GetLeaderReply) {}
     rpc suspend(SuspendRequest) returns (EmptyMessage) {}
 }
 
@@ -13,7 +13,7 @@ service RaftService {
 
 message VoteRequest {
     int64 term = 1; // Candidate's term.
-    int64 candidateId = 2;
+    int64 candidate_id = 2;
 }
 
 message VoteReply {
@@ -25,7 +25,7 @@ message VoteReply {
 
 message AppendRequest {
     int64 term = 1; // Current term number from the leader
-    int64 leaderId = 2; // Leader's id. So that the follower knows who his leader is
+    int64 leader_id = 2; // Leader's id. So that the follower knows who his leader is
 }
 
 message AppendReply {
@@ -36,7 +36,7 @@ message AppendReply {
 // GetLeader (Called by the client)
 
 message GetLeaderReply {
-    int64 leaderId = 1;
+    int64 leader_id = 1;
     string address = 2;
 }
 

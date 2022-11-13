@@ -14,18 +14,18 @@ class RaftServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.requestVote = channel.unary_unary(
-                '/RaftService/requestVote',
+        self.request_vote = channel.unary_unary(
+                '/RaftService/request_vote',
                 request_serializer=raft__pb2.VoteRequest.SerializeToString,
                 response_deserializer=raft__pb2.VoteReply.FromString,
                 )
-        self.appendEntries = channel.unary_unary(
-                '/RaftService/appendEntries',
+        self.append_entries = channel.unary_unary(
+                '/RaftService/append_entries',
                 request_serializer=raft__pb2.AppendRequest.SerializeToString,
                 response_deserializer=raft__pb2.AppendReply.FromString,
                 )
-        self.getLeader = channel.unary_unary(
-                '/RaftService/getLeader',
+        self.get_leader = channel.unary_unary(
+                '/RaftService/get_leader',
                 request_serializer=raft__pb2.EmptyMessage.SerializeToString,
                 response_deserializer=raft__pb2.GetLeaderReply.FromString,
                 )
@@ -39,19 +39,19 @@ class RaftServiceStub(object):
 class RaftServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def requestVote(self, request, context):
+    def request_vote(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def appendEntries(self, request, context):
+    def append_entries(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def getLeader(self, request, context):
+    def get_leader(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -66,18 +66,18 @@ class RaftServiceServicer(object):
 
 def add_RaftServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'requestVote': grpc.unary_unary_rpc_method_handler(
-                    servicer.requestVote,
+            'request_vote': grpc.unary_unary_rpc_method_handler(
+                    servicer.request_vote,
                     request_deserializer=raft__pb2.VoteRequest.FromString,
                     response_serializer=raft__pb2.VoteReply.SerializeToString,
             ),
-            'appendEntries': grpc.unary_unary_rpc_method_handler(
-                    servicer.appendEntries,
+            'append_entries': grpc.unary_unary_rpc_method_handler(
+                    servicer.append_entries,
                     request_deserializer=raft__pb2.AppendRequest.FromString,
                     response_serializer=raft__pb2.AppendReply.SerializeToString,
             ),
-            'getLeader': grpc.unary_unary_rpc_method_handler(
-                    servicer.getLeader,
+            'get_leader': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_leader,
                     request_deserializer=raft__pb2.EmptyMessage.FromString,
                     response_serializer=raft__pb2.GetLeaderReply.SerializeToString,
             ),
@@ -97,7 +97,7 @@ class RaftService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def requestVote(request,
+    def request_vote(request,
             target,
             options=(),
             channel_credentials=None,
@@ -107,14 +107,14 @@ class RaftService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/RaftService/requestVote',
+        return grpc.experimental.unary_unary(request, target, '/RaftService/request_vote',
             raft__pb2.VoteRequest.SerializeToString,
             raft__pb2.VoteReply.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
 
     @staticmethod
-    def appendEntries(request,
+    def append_entries(request,
             target,
             options=(),
             channel_credentials=None,
@@ -124,14 +124,14 @@ class RaftService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/RaftService/appendEntries',
+        return grpc.experimental.unary_unary(request, target, '/RaftService/append_entries',
             raft__pb2.AppendRequest.SerializeToString,
             raft__pb2.AppendReply.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
 
     @staticmethod
-    def getLeader(request,
+    def get_leader(request,
             target,
             options=(),
             channel_credentials=None,
@@ -141,7 +141,7 @@ class RaftService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/RaftService/getLeader',
+        return grpc.experimental.unary_unary(request, target, '/RaftService/get_leader',
             raft__pb2.EmptyMessage.SerializeToString,
             raft__pb2.GetLeaderReply.FromString,
             options, channel_credentials,
