@@ -53,7 +53,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     is_voted_at_this_term = False
     is_suspended = False
 
-    should_update_timer = True
+    should_reset_timer = True
 
     votes_number = 0
 
@@ -61,7 +61,6 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     # Constants 
 
-    SERVER_TIMEOUT = 0.5
     CONFIG_PATH = 'config.conf'
     
     TIMER_FROM = 150
@@ -69,11 +68,9 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     # Threads
 
-    leader_election_mutex = Lock()
-
-    server_time = 0
     timer_thread = None
     leader_thread = None 
+    leader_election_thread = None
 
     # Init
 
@@ -101,30 +98,39 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         if self.is_suspended:
             return
 
-        self.should_update_timer = True
-        # print(f'Request from candidate with id = {request.candidate_id}')
+        self.should_reset_timer = True
 
-        if self.term < request.term:
-            self.is_voted_at_this_term = False
-            self.term = request.term
-
-        result = False
         if self.term == request.term and not self.is_voted_at_this_term:
             self.is_voted_at_this_term = True
             self.state = State.follower
-            self.leader_id = request.candidate_id # TODO: Need to check the truth of this idea
-            result = True
+            self.leader_id = request.candidate_id
 
-        return pb2.VoteReply(term=self.term, result=result)
+            print(f'Voted for node {self.leader_id}')
+            self._print_state()
+
+            return pb2.VoteReply(term=self.term, result=True)
+
+        elif self.term < request.term:
+            self.is_voted_at_this_term = True
+            self.state = State.follower
+            self.leader_id = request.candidate_id
+            self.term = request.term
+
+            print(f'Voted for node {self.leader_id}')
+            self._print_state()
+
+            return pb2.VoteReply(term=self.term, result=True)
+
+        else: 
+            return pb2.VoteReply(term=self.term, result=False)
 
     def append_entries(self, request, context):
         if self.is_suspended:
             return
 
-        self.should_update_timer = True
-        print(f'Heartbeat from leader with id = {request.leader_id}')
+        self.should_reset_timer = True
 
-        success = self.term <= request.term
+        success = (self.term <= request.term)
         if success:
             self.term = request.term
             self.leader_id = request.leader_id
@@ -136,15 +142,15 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         return pb2.AppendReply(term=self.term, success=success)
 
     def get_leader(self, request, context):
-        if self.is_suspended:
+        if self.is_suspended or not self.is_voted_at_this_term:
             return
 
         print('Command from client: getleader')
 
-        leader_ipaddr, leader_port = self.servers[self.leader_id]
-        print(f'{self.leader_id} {leader_ipaddr}:{leader_port}')
+        _, leader_socket = self.servers[self.leader_id]
+        print(f'{self.leader_id} {leader_socket}')
 
-        return pb2.GetLeaderReply(leader_id=self.leader_id, address=f'{leader_ipaddr}:{leader_port}')
+        return pb2.GetLeaderReply(leader_id=self.leader_id, address=leader_socket)
 
     def suspend(self, request, context):
         if self.is_suspended:
@@ -184,8 +190,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             if self.is_suspended:
                 continue
 
-            if self.should_update_timer:
-                self.should_update_timer = False
+            if self.should_reset_timer:
+                self.should_reset_timer = False
                 time_start = datetime.datetime.now()
                 continue
 
@@ -193,29 +199,29 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 continue
 
             if self.state == State.follower:
+                self.should_reset_timer = True
                 self.state = State.candidate
                 self.term += 1
-                self.is_voted_at_this_term = False
 
                 print('The leader is dead')
                 self._print_state()
-
-                self._start_leader_election()
+                
+                self.leader_election_thread = Thread(target=self._start_leader_election, args=(), daemon=True)
+                self.leader_election_thread.start()
 
             elif self.state == State.candidate:
-                # MARK: Maybe useless, double check needed
-                # if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
-                #     self.should_update_timer = True
-                #     self.state = State.leader
-                #     self._print_state()
-                    
-                # else:
-                print('Timeout for elections')
-                self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
-                self.state = State.follower
+                self.should_reset_timer = True
+
+                if self.votes_number >= self.servers_number / 2:
+                    self._become_leader()
+                else:
+                    print('Timeout of elections')
+                    self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
+                    self.state = State.follower
+                    self._print_state()
         
             elif self.state == State.leader:
-                self.should_update_timer = True
+                self.should_reset_timer = True
 
     # Election 
 
@@ -223,53 +229,54 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         if self.is_suspended or self.state != State.candidate:
             return
 
-        print("Start leader election procedure")
-
         self.votes_number = 1
         self.is_voted_at_this_term = True
+        print(f"Voted for node {self.id}")
 
         threads = []
-        for id, (server_stub, socket) in self.servers.items():
+        for id, (server_stub, _) in self.servers.items():
             if id != self.id:
-                threads.append(Thread(target=self._request_vote, args=(server_stub, socket,)))
+                threads.append(Thread(target=self._request_vote, args=(server_stub,), daemon=True))
 
         [t.start() for t in threads]
         [t.join() for t in threads]
 
+        if self.state != State.candidate:
+            return
+
         print(f'Votes received: {self.votes_number} / {self.servers_number}')
+        if self.votes_number >= self.servers_number / 2:
+            self._become_leader()
 
-        if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
-            self.should_update_timer = True
-            self.state = State.leader
-            self.leader_id = self.id
-
-            self._print_state()
-
-            self.leader_thread = Thread(target=self._start_leader_procedure, args=())
-            self.leader_thread.start()
-
-
-    def _request_vote(self, server_stub, socket):
+    def _request_vote(self, server_stub):
         if self.is_suspended or self.state != State.candidate:
             return
 
-        self.should_update_timer = True
-
         message = pb2.VoteRequest(term=self.term, candidate_id=self.id)
         try:
-            response = server_stub.request_vote(message, timeout = self.SERVER_TIMEOUT)
+            response = server_stub.request_vote(message)
 
-            with self.leader_election_mutex:
-                if response.result:
-                    self.votes_number += 1
-                elif self.term < response.term:
-                    self.state = State.follower
-                    self.term = response.term
-                    self._print_state
+            if response.result:
+                self.votes_number += 1
+            elif self.term < response.term:
+                self.state = State.follower
+                self.term = response.term
+                self._print_state
         except:
             return # TODO: maybe do smth here
 
     # Heartbeat 
+    def _become_leader(self):
+        if self.state == State.leader:
+            return
+
+        self.should_reset_timer = True
+        self.state = State.leader
+        self.leader_id = self.id
+        self._print_state()
+
+        self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
+        self.leader_thread.start()
 
     def _start_leader_procedure(self):
         while True:
@@ -279,12 +286,12 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             if self.is_suspended:
                 continue
 
-            self.should_update_timer = True
+            self.should_reset_timer = True
 
             threads = []
             for id, (server_stub, _) in self.servers.items():
                 if id != self.id:
-                    threads.append(Thread(target=self._send_hearbeat, args=(server_stub,)))
+                    threads.append(Thread(target=self._send_hearbeat, args=(server_stub,), daemon=True))
 
             [t.start() for t in threads]
             [t.join() for t in threads]
@@ -295,10 +302,12 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     def _send_hearbeat(self, server_stub):
         if self.is_suspended or self.state != State.leader:
             return
+
+        self.should_reset_timer = True
             
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
-            response = server_stub.append_entries(message, timeout = self.SERVER_TIMEOUT)
+            response = server_stub.append_entries(message)
 
             if self.term < response.term:
                 self.term = response.term

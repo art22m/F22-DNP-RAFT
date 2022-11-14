@@ -31,7 +31,7 @@ def print_help():
     print('connect <ipaddr> <port>')
     print('getleader')
     print('suspend <period>')
-    print('exit')
+    print('quit')
 
 # Client functions
 
@@ -101,7 +101,7 @@ def start_client():
         elif command == 'suspend' and len(arguments) == 1:
             suspend(arguments[0])
 
-        elif command == 'exit':
+        elif command == 'quit':
             terminate('The client ends')
 
         else:
