@@ -14,18 +14,18 @@ import raft_pb2_grpc as pb2_grpc
 import grpc
 import sys
 import signal
-import enum 
+import enum
 import random
 import time
 import datetime
 
 from concurrent import futures
 from threading import Thread
-from multiprocessing import Lock
 
- # Constants 
+# Constants
 
 MAX_WORKERS = 10
+
 
 # Helpers
 
@@ -35,12 +35,14 @@ def terminate(message, closure=None):
         closure()
     sys.exit()
 
+
 # Server
 
 class State(enum.Enum):
     follower = 0
     candidate = 1
     leader = 2
+
 
 class ServerHandler(pb2_grpc.RaftServiceServicer):
 
@@ -53,7 +55,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     id = None
     socket = '127.0.0.1:5001'
 
-    servers = {} # {id : (server_stub, socket)}
+    servers = {}  # {id : (server_stub, socket)}
     servers_number = None
 
     # Config
@@ -70,32 +72,32 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     # Constants 
 
     CONFIG_PATH = 'config.conf'
-    
+
     TIMER_FROM = 150
     TIMER_TO = 300
 
     # Threads
 
     timer_thread = None
-    leader_thread = None 
+    leader_thread = None
     leader_election_thread = None
 
     # Init
 
-    def __init__(self, id):
+    def __init__(self, server_id):
         super().__init__()
-        
+
         self.term = 0
         self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
         self.state = State.follower
-        
+
         self._read_and_create_stubs(self.CONFIG_PATH)
         self.servers_number = len(self.servers)
-        self.id = id
+        self.id = server_id
 
-        if int(id) not in self.servers:
+        if int(server_id) not in self.servers:
             terminate('No such id in the config file')
-        _, self.socket = self.servers[int(id)]
+        _, self.socket = self.servers[int(server_id)]
 
         print(f'Server is started at {self.socket}')
         self._print_state()
@@ -104,7 +106,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         self.timer_thread.start()
 
     # Public Methods
-    
+
     def request_vote(self, request, context):
         if self.is_suspended:
             return
@@ -132,7 +134,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             return pb2.VoteReply(term=self.term, result=True)
 
-        else: 
+        else:
             return pb2.VoteReply(term=self.term, result=False)
 
     def append_entries(self, request, context):
@@ -175,7 +177,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         return pb2.EmptyMessage()
 
-    # Private Methdos
+    # Private Methods
 
     def _print_state(self):
         print(f'I am a {self.state.name}. Term: {self.term}')
@@ -187,7 +189,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                     conf_id, ipaddr, port = line.split()
 
                     socket = f"{ipaddr}:{port}"
-                    server_channel = grpc.insecure_channel(socket) 
+                    server_channel = grpc.insecure_channel(socket)
                     server_stub = pb2_grpc.RaftServiceStub(server_channel)
 
                     self.servers[int(conf_id)] = (server_stub, socket)
@@ -216,7 +218,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
                 print('The leader is dead')
                 self._print_state()
-                
+
                 self.leader_election_thread = Thread(target=self._start_leader_election, args=(), daemon=True)
                 self.leader_election_thread.start()
 
@@ -226,11 +228,10 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 if self.votes_number >= self.servers_number / 2:
                     self._become_leader()
                 else:
-                    print('Timeout of elections')
                     self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
                     self.state = State.follower
                     self._print_state()
-        
+
             elif self.state == State.leader:
                 self.should_reset_timer = True
 
@@ -245,8 +246,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         print(f"Voted for node {self.id}")
 
         threads = []
-        for id, (server_stub, _) in self.servers.items():
-            if id != self.id:
+        for current_id, (server_stub, _) in self.servers.items():
+            if current_id != self.id:
                 threads.append(Thread(target=self._request_vote, args=(server_stub,), daemon=True))
 
         [t.start() for t in threads]
@@ -255,7 +256,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         if self.state != State.candidate:
             return
 
-        print(f'Votes received: {self.votes_number} / {self.servers_number}')
+        # print(f'Votes received: {self.votes_number} / {self.servers_number}')
+        print(f'Votes received')
         if self.votes_number >= self.servers_number / 2:
             self._become_leader()
 
@@ -272,9 +274,9 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             elif self.term < response.term:
                 self.state = State.follower
                 self.term = response.term
-                self._print_state
+                self._print_state()
         except:
-            return # TODO: maybe do smth here
+            return
 
     # Heartbeat 
     def _become_leader(self):
@@ -300,22 +302,21 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             self.should_reset_timer = True
 
             threads = []
-            for id, (server_stub, _) in self.servers.items():
-                if id != self.id:
-                    threads.append(Thread(target=self._send_hearbeat, args=(server_stub,), daemon=True))
+            for current_id, (server_stub, _) in self.servers.items():
+                if current_id != self.id:
+                    threads.append(Thread(target=self._send_heartbeat, args=(server_stub,), daemon=True))
 
             [t.start() for t in threads]
             [t.join() for t in threads]
 
             time.sleep(0.05)
 
-    
-    def _send_hearbeat(self, server_stub):
+    def _send_heartbeat(self, server_stub):
         if self.is_suspended or self.state != State.leader:
             return
 
         self.should_reset_timer = True
-            
+
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
             response = server_stub.append_entries(message)
@@ -325,13 +326,14 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 self.state = State.follower
 
         except:
-            return # TODO: maybe do smth here
+            return
 
-def start_server(id):
-    serverHandler = ServerHandler(id)
+
+def start_server(server_id):
+    server_handler = ServerHandler(server_id)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_WORKERS))
-    pb2_grpc.add_RaftServiceServicer_to_server(serverHandler, server)
-    server.add_insecure_port(serverHandler.socket)
+    pb2_grpc.add_RaftServiceServicer_to_server(server_handler, server)
+    server.add_insecure_port(server_handler.socket)
     server.start()
 
     try:
@@ -339,15 +341,17 @@ def start_server(id):
     except KeyboardInterrupt as keys:
         terminate(f'{keys} was pressed, terminating the server...')
 
+
 # Main
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
+    input_id = -1
     try:
-        id = int(sys.argv[1])
+        input_id = int(sys.argv[1])
     except:
-         terminate("Specify arguments in the following order: \n \
+        terminate("Specify arguments in the following order: \n \
                     python3 server.py ID")
 
-    start_server(id)
+    start_server(input_id)

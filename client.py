@@ -26,6 +26,7 @@ server_port = 5000
 server_channel = None
 server_stub = None
 
+
 # Helpers
 
 def terminate(message, closure=None):
@@ -34,12 +35,14 @@ def terminate(message, closure=None):
         closure()
     sys.exit()
 
+
 def print_help():
     print('\nAvailable commands:')
     print('connect <ipaddr> <port>')
     print('getleader')
     print('suspend <period>')
     print('quit\n')
+
 
 # Client functions
 
@@ -68,7 +71,7 @@ def get_leader():
         return
 
     message = pb2.EmptyMessage()
-    try: 
+    try:
         response = server_stub.get_leader(message)
         print(f"{response.leader_id} {response.address}")
     except:
@@ -95,7 +98,7 @@ def start_client():
 
         command = client_input.split(' ', 1)[0]
         arguments = client_input.split(' ', 1)[1::]
-        
+
         # connect
         if command == 'connect' and len(arguments[0].split(' ')) == 2:
             ipaddr = arguments[0].split(' ')[0]
