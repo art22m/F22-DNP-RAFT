@@ -1,3 +1,11 @@
+"""
+|Client|
+DNP Lab: RAFT
+Students: Vagif Khalilov, Artem Murashko
+Emails: v.khalilov@innopolis.university, ar.murashko@innopolis.univeristy
+Group: BS20-SD-01
+"""
+
 # Imports
 
 import raft_pb2 as pb2
@@ -14,11 +22,11 @@ SERVER_CONNECTION_TIMEOUT = 10
 # Config
 
 server_addr = '127.0.0.1'
-server_port = 50051
+server_port = 5000
 server_channel = None
 server_stub = None
 
-# Helper
+# Helpers
 
 def terminate(message, closure=None):
     print(message)
@@ -27,11 +35,11 @@ def terminate(message, closure=None):
     sys.exit()
 
 def print_help():
-    print('Commands:')
+    print('\nAvailable commands:')
     print('connect <ipaddr> <port>')
     print('getleader')
     print('suspend <period>')
-    print('quit')
+    print('quit\n')
 
 # Client functions
 
@@ -60,7 +68,6 @@ def get_leader():
         return
 
     message = pb2.EmptyMessage()
-
     try: 
         response = server_stub.get_leader(message)
         print(f"{response.leader_id} {response.address}")
@@ -114,4 +121,4 @@ if __name__ == '__main__':
     try:
         start_client()
     except KeyboardInterrupt as keys:
-        terminate(f'{keys} was pressed, terminating server.')
+        terminate(f'{keys} was pressed, terminating the client.')

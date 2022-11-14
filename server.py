@@ -1,3 +1,11 @@
+"""
+|Server|
+DNP Lab: RAFT
+Students: Vagif Khalilov, Artem Murashko
+Emails: v.khalilov@innopolis.university, ar.murashko@innopolis.univeristy
+Group: BS20-SD-01
+"""
+
 # Imports
 
 import raft_pb2 as pb2
@@ -19,7 +27,7 @@ from multiprocessing import Lock
 
 MAX_WORKERS = 10
 
-# Helper
+# Helpers
 
 def terminate(message, closure=None):
     print(message)
@@ -329,7 +337,7 @@ def start_server(id):
     try:
         server.wait_for_termination()
     except KeyboardInterrupt as keys:
-        terminate(f'{keys} was pressed, terminating server')
+        terminate(f'{keys} was pressed, terminating the server...')
 
 # Main
 
