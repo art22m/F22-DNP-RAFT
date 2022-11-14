@@ -84,6 +84,9 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         self._read_and_create_stubs(self.CONFIG_PATH)
         self.servers_number = len(self.servers)
         self.id = id
+
+        if int(id) not in self.servers:
+            terminate('No such id in the config file')
         _, self.socket = self.servers[int(id)]
 
         print(f'Server is started at {self.socket}')
