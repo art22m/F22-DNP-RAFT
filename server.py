@@ -7,7 +7,6 @@ import grpc
 import sys
 import signal
 import enum 
-import os
 import random
 import time
 import datetime
@@ -44,18 +43,17 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     state = None
 
     id = None
-    host = '127.0.0.1'
-    port = '5001'
+    socket = '127.0.0.1:5001'
 
-    servers = {} # {id : (ipaddr:port)}
+    servers = {} # {id : (server_stub, socket)}
     servers_number = None
 
     # Config
 
-    is_voted_at_this_term = 0
+    is_voted_at_this_term = False
     is_suspended = False
 
-    should_update_timer = False
+    should_update_timer = True
 
     votes_number = 0
 
@@ -65,6 +63,9 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     SERVER_TIMEOUT = 0.5
     CONFIG_PATH = 'config.conf'
+    
+    TIMER_FROM = 150
+    TIMER_TO = 300
 
     # Threads
 
@@ -80,14 +81,15 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         super().__init__()
         
         self.term = 0
-        self.timer = random.randint(700, 1001) # TODO: Change
+        self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
         self.state = State.follower
         
-        self._fetch_servers_info(self.CONFIG_PATH)
+        self._read_and_create_stubs(self.CONFIG_PATH)
         self.servers_number = len(self.servers)
         self.id = id
-        self.host, self.port = self.servers[int(id)]
+        _, self.socket = self.servers[int(id)]
 
+        print(f'Server is started at {self.socket}')
         self._print_state()
 
         self.timer_thread = Thread(target=self._start_timer_thread, args=(), daemon=True)
@@ -161,12 +163,18 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     def _print_state(self):
         print(f'I am a {self.state.name}. Term: {self.term}')
 
-    def _fetch_servers_info(self, path):
+    def _read_and_create_stubs(self, path):
         try:
             with open(path) as config:
                 for line in config:
                     conf_id, ipaddr, port = line.split()
-                    self.servers[int(conf_id)] = (ipaddr, port)
+
+                    socket = f"{ipaddr}:{port}"
+                    server_channel = grpc.insecure_channel(socket) 
+                    server_stub = pb2_grpc.RaftServiceStub(server_channel)
+
+                    self.servers[int(conf_id)] = (server_stub, socket)
+
         except Exception as e:
             terminate(f'Unable to open/parse {path} file:\n{e}')
 
@@ -179,6 +187,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             if self.should_update_timer:
                 self.should_update_timer = False
                 time_start = datetime.datetime.now()
+                continue
 
             if (datetime.datetime.now() - time_start).total_seconds() * 1000 <= self.timer:
                 continue
@@ -201,7 +210,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 #     self._print_state()
                     
                 # else:
-                self.timer = random.randint(700, 1001) # TODO: Change
+                print('Timeout for elections')
+                self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
                 self.state = State.follower
         
             elif self.state == State.leader:
@@ -219,14 +229,14 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         self.is_voted_at_this_term = True
 
         threads = []
-        for id, (ipaddr, port) in self.servers.items():
+        for id, (server_stub, socket) in self.servers.items():
             if id != self.id:
-                threads.append(Thread(target=self._request_vote, args=(f'{ipaddr}:{port}',), daemon=True))
+                threads.append(Thread(target=self._request_vote, args=(server_stub, socket,)))
 
         [t.start() for t in threads]
         [t.join() for t in threads]
 
-        print('Votes received')
+        print(f'Votes received: {self.votes_number} / {self.servers_number}')
 
         if self.state == State.candidate and self.votes_number >= self.servers_number / 2:
             self.should_update_timer = True
@@ -235,38 +245,29 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             self._print_state()
 
-            self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
+            self.leader_thread = Thread(target=self._start_leader_procedure, args=())
             self.leader_thread.start()
 
 
-    def _request_vote(self, socket_addr):
-        if self.is_suspended:
+    def _request_vote(self, server_stub, socket):
+        if self.is_suspended or self.state != State.candidate:
             return
 
-        server_channel = grpc.insecure_channel(socket_addr)
-        try:
-            grpc.channel_ready_future(server_channel).result(timeout=self.SERVER_TIMEOUT)
-        except:
-            print(f"Server {socket_addr} is unavailable")
-            return
-        else:
-            server_stub = pb2_grpc.RaftServiceStub(server_channel)
+        self.should_update_timer = True
 
         message = pb2.VoteRequest(term=self.term, candidate_id=self.id)
         try:
             response = server_stub.request_vote(message, timeout = self.SERVER_TIMEOUT)
 
             with self.leader_election_mutex:
-                print(f"Server {socket_addr} result is {response.result}")
                 if response.result:
                     self.votes_number += 1
                 elif self.term < response.term:
                     self.state = State.follower
                     self.term = response.term
                     self._print_state
-
         except:
-            server_channel.close()
+            return # TODO: maybe do smth here
 
     # Heartbeat 
 
@@ -281,9 +282,9 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             self.should_update_timer = True
 
             threads = []
-            for id, (ipaddr, port) in self.servers.items():
+            for id, (server_stub, _) in self.servers.items():
                 if id != self.id:
-                    threads.append(Thread(target=self._send_hearbeat, args=(f'{ipaddr}:{port}',), daemon=True))
+                    threads.append(Thread(target=self._send_hearbeat, args=(server_stub,)))
 
             [t.start() for t in threads]
             [t.join() for t in threads]
@@ -291,19 +292,10 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             time.sleep(0.05)
 
     
-    def _send_hearbeat(self, socket_addr):
+    def _send_hearbeat(self, server_stub):
         if self.is_suspended or self.state != State.leader:
             return
             
-        server_channel = grpc.insecure_channel(socket_addr)
-        try:
-            grpc.channel_ready_future(server_channel).result(timeout=self.SERVER_TIMEOUT)
-        except:
-            print(f"Server {socket_addr} is unavailable")
-            return
-        else:
-            server_stub = pb2_grpc.RaftServiceStub(server_channel)
-
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
             response = server_stub.append_entries(message, timeout = self.SERVER_TIMEOUT)
@@ -313,16 +305,15 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 self.state = State.follower
 
         except:
-            server_channel.close()
+            return # TODO: maybe do smth here
 
 def start_server(id):
     serverHandler = ServerHandler(id)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_WORKERS))
     pb2_grpc.add_RaftServiceServicer_to_server(serverHandler, server)
-    server.add_insecure_port(f"{serverHandler.host}:{serverHandler.port}")
+    server.add_insecure_port(serverHandler.socket)
     server.start()
 
-    print(f'Server is started at {serverHandler.host}:{serverHandler.port}')
     try:
         server.wait_for_termination()
     except KeyboardInterrupt as keys:
