@@ -120,27 +120,25 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         self.should_reset_timer = True
 
+        failure_reply = pb2.VoteReply(term=self.term, result=False)
         if request.term < self.term:
-            return pb2.VoteReply(term=self.term, result=False)
-        
-        if self.is_voted_at_this_term:
-            return pb2.VoteReply(term=self.term, result=False)
+            return failure_reply
+        elif self.is_voted_at_this_term:
+            return failure_reply
+        elif request.last_log_index < self.commit_id:
+            return failure_reply
+        elif (request.last_log_index < len(self.logs)) and (self.logs[request.last_log_index][0] != request.last_log_term):
+            return failure_reply
+        else:
+            self.is_voted_at_this_term = True
+            self.state = State.follower
+            self.leader_id = request.candidate_id
+            self.term = request.term
+            
+            print(f'Voted for node {self.leader_id}')
+            self._print_state()
 
-        if request.last_log_index < self.commit_id:
-            return pb2.VoteReply(term=self.term, result=False)
- 
-        if (request.last_log_index < len(self.logs)) and (self.logs[request.last_log_index][0] != request.last_log_term):
-            return pb2.VoteReply(term=self.term, result=False)
-
-        self.is_voted_at_this_term = True
-        self.state = State.follower
-        self.leader_id = request.candidate_id
-        self.term = request.term
-        
-        print(f'Voted for node {self.leader_id}')
-        self._print_state()
-
-        return pb2.VoteReply(term=self.term, result=True)
+            return pb2.VoteReply(term=self.term, result=True)
 
     def append_entries(self, request, context):
         if self.is_suspended:
@@ -148,10 +146,32 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         self.should_reset_timer = True
 
-        success = (self.term <= request.term)
+        success = ((self.term <= request.term) and (request.prev_log_index < len(self.logs)))
         if success:
             self.term = request.term
             self.leader_id = request.leader_id
+            
+            start_idx = request.prev_log_index + 1
+            logs_start = self.logs[:start_idx]
+            logs_middle = self.logs[start_idx : start_idx + len(request.entries)]
+            logs_end = self.logs[start_idx + len(request.entries):]
+
+            is_conflict = False
+            for i in range(0, logs_middle):
+                if logs_middle[i] != request.entries[i]:
+                    is_conflict = True
+                    break
+            
+            last_new_entry_idx = 0
+            if is_conflict:
+                self.logs = logs_start + request.entries
+                last_new_entry_idx = len(self.logs) - 1 if len(self.logs) > 0 else 0
+            else:
+                self.logs = logs_start + request.entries + logs_end
+                last_new_entry_idx = len(logs_start + request.entries) - 1 if len(logs_start + request.entries) > 0 else 0
+
+            if request.commit_idx > self.commit_idx:
+                self.commit_idx = min(request.commit_idx, last_new_entry_idx)
 
             if self.state != State.follower:
                 self.state = State.follower
@@ -284,7 +304,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             return
 
     # Heartbeat 
-    def _become_leader(self):
+    def _become_leader(self): # TODO: rewrite this
         if self.state == State.leader:
             return
 
@@ -316,7 +336,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             time.sleep(0.05)
 
-    def _send_heartbeat(self, server_stub):
+    def _send_heartbeat(self, server_stub): # TODO: rewrite this
         if self.is_suspended or self.state != State.leader:
             return
 
@@ -324,7 +344,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
-            response = server_stub.append_entries(message)
+            response = server_stub.append_entries(message) 
 
             if self.term < response.term:
                 self.term = response.term
