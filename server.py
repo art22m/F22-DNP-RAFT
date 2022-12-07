@@ -69,6 +69,13 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     leader_id = 0
 
+    commit_idx = 0 # index of the last log entry on the server
+    last_applied_idx = 0 # index of the last applied log entry.
+
+    logs = [] # List of entries [{term, command}]
+    next_idx = {} # {id : next_index}
+    match_idx = {} # {id : highest_log_idx}
+
     # Constants 
 
     CONFIG_PATH = 'config.conf'
@@ -113,29 +120,27 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         self.should_reset_timer = True
 
-        if self.term == request.term and not self.is_voted_at_this_term:
-            self.is_voted_at_this_term = True
-            self.state = State.follower
-            self.leader_id = request.candidate_id
-
-            print(f'Voted for node {self.leader_id}')
-            self._print_state()
-
-            return pb2.VoteReply(term=self.term, result=True)
-
-        elif self.term < request.term:
-            self.is_voted_at_this_term = True
-            self.state = State.follower
-            self.leader_id = request.candidate_id
-            self.term = request.term
-
-            print(f'Voted for node {self.leader_id}')
-            self._print_state()
-
-            return pb2.VoteReply(term=self.term, result=True)
-
-        else:
+        if request.term < self.term:
             return pb2.VoteReply(term=self.term, result=False)
+        
+        if self.is_voted_at_this_term:
+            return pb2.VoteReply(term=self.term, result=False)
+
+        if request.last_log_index < self.commit_id:
+            return pb2.VoteReply(term=self.term, result=False)
+ 
+        if (request.last_log_index < len(self.logs)) and (self.logs[request.last_log_index][0] != request.last_log_term):
+            return pb2.VoteReply(term=self.term, result=False)
+
+        self.is_voted_at_this_term = True
+        self.state = State.follower
+        self.leader_id = request.candidate_id
+        self.term = request.term
+        
+        print(f'Voted for node {self.leader_id}')
+        self._print_state()
+
+        return pb2.VoteReply(term=self.term, result=True)
 
     def append_entries(self, request, context):
         if self.is_suspended:
