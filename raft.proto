@@ -5,6 +5,8 @@ syntax = "proto3";
 service RaftService {
     rpc request_vote(VoteRequest) returns (VoteReply) {}
     rpc append_entries(AppendRequest) returns (AppendReply) {}
+    rpc set_val(SetRequest) returns (SetReply) {}
+    rpc get_val(GetRequest) returns (GetReply) {}
     rpc get_leader(EmptyMessage) returns (GetLeaderReply) {}
     rpc suspend(SuspendRequest) returns (EmptyMessage) {}
 }
@@ -14,6 +16,8 @@ service RaftService {
 message VoteRequest {
     int64 term = 1; // Candidate's term.
     int64 candidate_id = 2;
+    int64 last_log_index = 3;
+    int64 last_log_term = 4;
 }
 
 message VoteReply {
@@ -26,6 +30,10 @@ message VoteReply {
 message AppendRequest {
     int64 term = 1; // Current term number from the leader
     int64 leader_id = 2; // Leader's id. So that the follower knows who his leader is
+    int64 prev_log_index = 3;
+    int64 prev_log_term = 4;
+    int64 entries = 5;
+    int64 leader_commit = 6;
 }
 
 message AppendReply {
@@ -44,6 +52,28 @@ message GetLeaderReply {
 
 message SuspendRequest {
     int64 period = 1;
+}
+
+// Set (Called by the client)
+
+message SetRequest {
+    string key = 1;
+    string value = 2;
+}
+
+message SetReply {
+    bool success = 1;
+}
+
+// Get (Called by the client)
+
+message GetRequest {
+    string key = 1;
+}
+
+message GetReply {
+    bool success = 1;
+    string value = 2;
 }
 
 // Helpers
