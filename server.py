@@ -82,8 +82,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     CONFIG_PATH = 'config.conf'
 
-    TIMER_FROM = 150
-    TIMER_TO = 300
+    TIMER_FROM = 600
+    TIMER_TO = 1100
 
     # Threads
 
@@ -124,12 +124,16 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         failure_reply = pb2.VoteReply(term=self.term, result=False)
         if request.term < self.term:
+            print(f"111 - {request.term} < {self.term}")
             return failure_reply
-        elif self.is_voted_at_this_term:
+        elif request == self.term and self.is_voted_at_this_term:
+            print("222")
             return failure_reply
         elif request.last_log_index < self.commit_id:
+            print("333")
             return failure_reply
         elif (request.last_log_index < len(self.logs)) and (self.logs[request.last_log_index][0] != request.last_log_term):
+            print("444")
             return failure_reply
         else:
             self.is_voted_at_this_term = True
@@ -172,8 +176,13 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 self.logs = logs_start + request.entries + logs_end
                 last_new_entry_idx = len(logs_start + request.entries) - 1 if len(logs_start + request.entries) > 0 else 0
 
-            if request.commit_idx > self.commit_idx:
-                self.commit_idx = min(request.commit_idx, last_new_entry_idx)
+            if request.leader_commit > self.commit_idx:
+                self.commit_idx = min(request.leader_commit, last_new_entry_idx)
+                # можно вынести в отдельную функцию (см метод _start_leader_procedure)
+                while self.last_applied_idx < self.commit_idx:
+                    _, key, value = self.logs[self.last_applied_idx][1]
+                    self.hash_table[key] = value
+                    self.last_applied_idx += 1
 
             if self.state != State.follower:
                 self.state = State.follower
@@ -214,7 +223,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         if self.state == State.follower:
             leader_stub, _ = self.servers[self.leader_id]
             try:
-                response = leader_stub.SetVal(pb2.SetRequest(key=request.key, value=request.value))
+                response = leader_stub.set_val(pb2.SetRequest(key=request.key, value=request.value))
                 success = response.success
             except:
                 success = False
@@ -288,8 +297,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
                 print('The leader is dead')
                 self._print_state()
 
-                self.leader_election_thread = Thread(target=self._start_leader_election, args=(), daemon=True)
-                self.leader_election_thread.start()
+                # self.leader_election_thread = Thread(target=self._start_leader_election, args=(), daemon=True)
+                # self.leader_election_thread.start()
 
             elif self.state == State.candidate:
                 self.should_reset_timer = True
@@ -325,8 +334,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
         if self.state != State.candidate:
             return
 
-        # print(f'Votes received: {self.votes_number} / {self.servers_number}')
-        print(f'Votes received')
+        print(f'Votes received: {self.votes_number} / {self.servers_number}')
+        #print(f'Votes received')
         if self.votes_number >= self.servers_number / 2:
             self._become_leader()
 
@@ -348,7 +357,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             return
 
     # Heartbeat 
-    def _become_leader(self): # TODO: rewrite this
+    def _become_leader(self):
         if self.state == State.leader:
             return
 
@@ -359,7 +368,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
         self.leader_thread.start()
-        self.next_idx = [self.logs_number] * len(self.servers_number)
+        self.next_idx = [len(self.logs)+1] * len(self.servers_number)
         self.match_idx = [0] * len(self.servers_number)
 
     def _start_leader_procedure(self):
@@ -375,27 +384,65 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
             threads = []
             for current_id, (server_stub, _) in self.servers.items():
                 if current_id != self.id:
-                    threads.append(Thread(target=self._send_heartbeat, args=(server_stub,), daemon=True))
+                    threads.append(Thread(target=self._send_heartbeat, args=(server_stub, current_id, ), daemon=True))
 
             [t.start() for t in threads]
             [t.join() for t in threads]
 
+            self.next_idx[self.id] = len(self.logs) + 1
+            self.match_idx[self.id] = len(self.logs)
+
+            cnt = 0
+            for i in range(len(self.match_idx)):
+                if self.match_idx[i] >= self.commit_idx+1:
+                    cnt += 1
+            if cnt >= self.servers_number / 2:
+                self.commit_idx += 1
+            
+            # можно вынести в отдельную функцию (см метод append_entries)
+            while self.commit_idx > self.last_applied:
+                _, key, value = self.logs[self.last_applied][2]
+                self.hash_table[key] = value
+                self.last_applied += 1
+
             time.sleep(0.05)
 
-    def _send_heartbeat(self, server_stub):
+    def _send_heartbeat(self, server_stub, addr_id):
         if self.is_suspended or self.state != State.leader:
             return
 
         self.should_reset_timer = True
 
-        message = pb2.AppendRequest(term=self.term, leader_id=self.id)
+        prevLogIndex = self.nextIndex[addr.id] - 1
+        prevLogTerm = 0
+        entries = []
+
+        if prevLogIndex > 1:
+            prevLogTerm = self.logs[self.next_idx[addr_id]-2][0]
+        if self.next_idx[addr_id] <= len(self.logs):
+            entries = self.logs[self.next_idx[addr_id]:]
+
+
+        message = pb2.AppendRequest(term=self.term, 
+                                    leader_id=self.id, 
+                                    prev_log_index=prevLogIndex, 
+                                    prev_log_term=prevLogTerm, 
+                                    entries=entries, 
+                                    leader_commit=self.commit_index)
         try:
-            response = server_stub.append_entries(message) # Modify this
+            response = server_stub.append_entries(message)
 
             if self.term < response.term:
                 self.term = response.term
                 self.state = State.follower
-
+            else:
+                if response.success:
+                   if self.next_idx[addr_id] <= len(self.logs):
+                        self.match_idx[addr_id] = self.next_idx[addr_id]
+                        self.next_idx[addr_id] += 1
+                else:
+                    self.next_idx[addr_id] -= 1
+                    self.match_idx[addr_id] = min(self.match_idx[addr_id], self.next_idx[addr_id] - 1)
         except:
             return
 
