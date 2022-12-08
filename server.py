@@ -359,6 +359,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
         self.leader_thread.start()
+        self.next_idx = [self.logs_number] * len(self.servers_number)
+        self.match_idx = [0] * len(self.servers_number)
 
     def _start_leader_procedure(self):
         while True:
@@ -380,7 +382,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             time.sleep(0.05)
 
-    def _send_heartbeat(self, server_stub): # TODO: rewrite this
+    def _send_heartbeat(self, server_stub):
         if self.is_suspended or self.state != State.leader:
             return
 
