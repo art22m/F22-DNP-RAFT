@@ -75,7 +75,8 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     logs = [] # List of entries [{term, command}]
     next_idx = {} # {id : next_index}
     match_idx = {} # {id : highest_log_idx}
-    user_values = {} # {key : value}
+    
+    hash_table = {} # {key : value}
 
     # Constants 
 
@@ -141,7 +142,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             return pb2.VoteReply(term=self.term, result=True)
 
-    def append_entries(self, request, context): # add code for adding new entries in user_values
+    def append_entries(self, request, context): # TODO: add code for adding new entries in hash_table
         if self.is_suspended:
             return
 
@@ -203,19 +204,48 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         return pb2.EmptyMessage()
 
-    def set_value(self, request, context):
+    def set_val(self, request, context):
         if self.is_suspended:
             return
 
-        # if not leader, send to leader
-        if self.state != State.leader:
-            return pb2.SetReply()
-        else: 
-            # if leader, set value
-            print(f'Command from client: set {request.key} {request.value}')
-            self.user_values[request.key] = request.value
+        print(f'Command from client: set {request.key} {request.value}')
 
-        return pb2.SetReply()
+        success = False
+        if self.state == State.follower:
+            leader_stub, _ = self.servers[self.leader_id]
+            try:
+                response = leader_stub.SetVal(pb2.SetRequest(key=request.key, value=request.value))
+                success = response.success
+            except:
+                success = False
+        elif self.state == State.candidate:
+            success = False
+        else: 
+            # add entry to log
+            self.logs.append((self.term, ('set', request.key, request.value)))
+            self.commit_idx += 1
+
+            current_commit_idx = self.commit_idx
+
+            time.sleep(0.5) # TODO: decrease
+            
+            success = (current_commit_idx <= self.last_applied_idx)
+
+
+        return pb2.SetReply(success=success)
+
+
+    def get_val(self, request, context):
+        if self.is_suspended:
+            return
+            
+        value = self.hash_table.get(request.key)
+
+        success = (value is not None)
+        value = value if success else "None"
+        return pb2.GetReply(success=success, value=value)
+        
+        
     # Private Methods
 
     def _print_state(self):
