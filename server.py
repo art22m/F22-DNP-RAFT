@@ -75,6 +75,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
     logs = [] # List of entries [{term, command}]
     next_idx = {} # {id : next_index}
     match_idx = {} # {id : highest_log_idx}
+    user_values = {} # {key : value}
 
     # Constants 
 
@@ -114,7 +115,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
     # Public Methods
 
-    def request_vote(self, request, context):
+    def request_vote(self, request, context): # DONE
         if self.is_suspended:
             return
 
@@ -140,7 +141,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
             return pb2.VoteReply(term=self.term, result=True)
 
-    def append_entries(self, request, context):
+    def append_entries(self, request, context): # add code for adding new entries in user_values
         if self.is_suspended:
             return
 
@@ -202,6 +203,19 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         return pb2.EmptyMessage()
 
+    def set_value(self, request, context):
+        if self.is_suspended:
+            return
+
+        # if not leader, send to leader
+        if self.state != State.leader:
+            return pb2.SetReply()
+        else: 
+            # if leader, set value
+            print(f'Command from client: set {request.key} {request.value}')
+            self.user_values[request.key] = request.value
+
+        return pb2.SetReply()
     # Private Methods
 
     def _print_state(self):
@@ -344,7 +358,7 @@ class ServerHandler(pb2_grpc.RaftServiceServicer):
 
         message = pb2.AppendRequest(term=self.term, leader_id=self.id)
         try:
-            response = server_stub.append_entries(message) 
+            response = server_stub.append_entries(message) # Modify this
 
             if self.term < response.term:
                 self.term = response.term

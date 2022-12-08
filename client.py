@@ -63,33 +63,46 @@ def connect(ipaddr, port):
         print(f"The server {server_addr}:{server_port} is unavailable")
         return
 
+### NEED TO TEST THIS ###
+
+def check_stub():
+    if server_stub is None:
+        print(f"The server {server_addr}:{server_port} is unavailable")
+        return False
+    return True
+
+def send_message(message, rpc_function):
+    if not check_stub():
+        return None
+
+    try:
+        response = rpc_function(message)
+        return response
+    except:
+        print(f"The server {server_addr}:{server_port} is unavailable")
+        return None
 
 def get_leader():
-    global server_stub
-    if server_stub is None:
-        print('The client is not connected to any server')
-        return
-
     message = pb2.EmptyMessage()
-    try:
-        response = server_stub.get_leader(message)
+    response = send_message(message, server_stub.get_leader)
+    if response is not None:
         print(f"{response.leader_id} {response.address}")
-    except:
-        print(f"The server {server_addr}:{server_port} is unavailable")
-
 
 def suspend(period):
-    global server_stub
-    if server_stub is None:
-        print('The client is not connected to any server')
-        return
-
     message = pb2.SuspendRequest(period=int(period))
-    try:
-        server_stub.suspend(message)
-    except:
-        print(f"The server {server_addr}:{server_port} is unavailable")
+    response = send_message(message, server_stub.suspend)
 
+def set_val(key, value):
+    message = pb2.SetValRequest(key=key, value=value)
+    response = send_message(message, server_stub.set_val)
+    if response is not None: # after testing, remove this if-statement
+        print(response.message)
+
+def get_val(key):
+    message = pb2.GetValRequest(key=key)
+    response = send_message(message, server_stub.get_val)
+    if response is not None:
+        print(response.value)
 
 def start_client():
     print('The client starts')
@@ -99,7 +112,6 @@ def start_client():
         command = client_input.split(' ', 1)[0]
         arguments = client_input.split(' ', 1)[1::]
 
-        # connect
         if command == 'connect' and len(arguments[0].split(' ')) == 2:
             ipaddr = arguments[0].split(' ')[0]
             port = arguments[0].split(' ')[1]
@@ -110,6 +122,12 @@ def start_client():
 
         elif command == 'suspend' and len(arguments) == 1:
             suspend(arguments[0])
+
+        elif command == 'setval' and len(arguments) == 2:
+            set_val(arguments[0], arguments[1])
+
+        elif command == 'getval' and len(arguments) == 1:
+            get_val(arguments[0])
 
         elif command == 'quit':
             terminate('The client ends')
