@@ -34,14 +34,14 @@ def cmd_setval(key, value, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
-    state1['stub'].SetVal(pb2.SetValRequest(key=key, value=value))
+    state1['stub'].SetVal(pb2.SetRequest(key=key, value=value))
     return "", state1
 
 def cmd_getval(key, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
-    resp = state1['stub'].GetVal(pb2.GetValRequest(key=key))
+    resp = state1['stub'].GetVal(pb2.GetRequest(key=key))
     return f"{resp.value}", state1
 
 def exec_cmd(line, state):

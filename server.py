@@ -284,7 +284,8 @@ class Handler(pb2_grpc.RaftNodeServicer):
         global is_suspended
         if is_suspended:
             return
-
+        if state['leader_id'] == -1:
+            return
         (host, port, _) = state['nodes'][state['leader_id']]
         reply = {'leader_id': state['leader_id'], 'address': f"{host}:{[port]}"}
         return pb2.GetLeaderReply(**reply)
