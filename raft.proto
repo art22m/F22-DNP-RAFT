@@ -1,3 +1,5 @@
+// python3 -m grpc_tools.protoc raft.proto --proto_path=. --python_out=. --grpc_python_out=.
+
 syntax = "proto3";
 
 service RaftNode {
@@ -14,11 +16,13 @@ service RaftNode {
 message VoteRequest {
         int64 term = 1; // Candidate's term.
         int64 candidate_id = 2;
+        int64 last_log_index = 3; // Index of candidate's last log entry
+        int64 last_log_term = 4; // Term of candidate's last log entry
 }
     
 message VoteReply {
         int64 term = 1; // Term number of the server
-        bool success = 2; // Result of voting (True/False)
+        bool result = 2; // Result of voting (True/False)
 }
 
 // AppendEntries (Only Heartbeats for this lab)
@@ -30,7 +34,6 @@ message AppendRequest {
         int64 prev_log_term = 4; // Term of prev_log_index entry
         repeated Entry entries = 5; // Log entries to store (empty for heartbeat)
         int64 leader_commit = 6; // Leader's commitIndex
-
 }
     
 message AppendReply {

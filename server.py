@@ -36,6 +36,14 @@ state = {
     'leader_id': -1,
 }
 
+commit_idx = 0 # index of the last log entry on the server
+last_applied_idx = 0 # index of the last applied log entry.
+
+logs = [] # List of entries [{term, command}]
+next_idx = {} # {id : next_index}
+match_idx = {} # {id : highest_log_idx}
+    
+hash_table = {} # {key : value}
 
 
 # for debugging
@@ -231,15 +239,26 @@ class Handler(pb2_grpc.RaftNodeServicer):
         
         reset_election_campaign_timer()
         with state_lock:
+            term = request.term
+            candidate_id = request.candidate_id
+            last_log_index = request.last_log_index
+            last_log_term = request.last_log_term
+
             reply = {'result': False, 'term': state['term']}
-            if state['term'] < request.term:
-                state['term'] = request.term
+            if state['term'] < term:
+                state['term'] = term
                 become_a_follower()
-            if state['term'] == request.term:
+            if state['term'] > term:
+                return pb2.VoteReply(**reply)
+            if last_log_index < commit_id:
+                return pb2.VoteReply(**reply)
+            if (last_log_index < len(logs)) and (logs[last_log_index][0] != last_log_term):
+                return pb2.VoteReply(**reply)
+            if state['term'] == term:
                 if state['voted_for_id'] == -1:
                     # reset_election_campaign_timer()
                     become_a_follower()
-                    state['voted_for_id'] = request.candidate_id
+                    state['voted_for_id'] = candidate_id
                     reply = {'result': True, 'term': state['term']}
                     print(f"Voted for node {state['voted_for_id']}")
             return pb2.VoteReply(**reply)
@@ -279,6 +298,27 @@ class Handler(pb2_grpc.RaftNodeServicer):
         threading.Timer(request.period, wake_up_after_suspend).start()
         return pb2.EmptyMessage()
 
+    def GetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        with state_lock:
+            value = hash_table.get(request.key)
+            success = (value is not None)
+            value = value if success else "None"
+            reply = {'success': success, 'value': value}
+            return pb2.GetReply(**reply)
+    
+    def SetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        with state_lock:
+            hash_table[request.key] = request.value
+            reply = {'success': True}
+            return pb2.SetReply(**reply)
 #
 # other
 #
