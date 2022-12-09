@@ -27,7 +27,7 @@ def cmd_suspend(duration, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
-    state1['stub'].Suspend(pb2.SuspendRequest(period=duration))
+    state1['stub'].Suspend(pb2.SuspendRequest(period=int(duration)))
     return "", state1
 
 def cmd_setval(key, value, state):

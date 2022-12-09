@@ -36,6 +36,15 @@ state = {
     'leader_id': -1,
 }
 
+commit_idx = 0 # index of the last log entry on the server
+last_applied_idx = 0 # index of the last applied log entry.
+
+logs = [] # List of entries [{term, command}]
+next_idx = {} # {id : next_index}
+match_idx = {} # {id : highest_log_idx}
+    
+hash_table = {} # {key : value}
+
 # for debugging
 START_TIME = time.time()
 def log_prefix():
@@ -242,7 +251,12 @@ class Handler(pb2_grpc.RaftNodeServicer):
             if state['term'] < request.term:
                 state['term'] = request.term
                 become_a_follower()
-
+            #if state['term'] > term:
+            #    return pb2.VoteReply(**reply)
+            #if last_log_index < commit_id:
+            #    return pb2.VoteReply(**reply)
+            #if (last_log_index < len(logs)) and (logs[last_log_index][0] != last_log_term):
+            #    return pb2.VoteReply(**reply)
             if state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
                 state['voted_for_id'] = request.candidate_id
@@ -275,9 +289,11 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if is_suspended:
             return
 
+        if state.get('leader_id') is None:
+            return
+
         (host, port, _) = state['nodes'][state['leader_id']]
-        reply = {'leader_id': state['leader_id'], 'leader_addr': f"{host}:{[port]}"}
-        return pb2.LeaderResp(**reply)
+        return pb2.GetLeaderReply(leader_id=state['leader_id'], address=f"{host}:{[port]}")
 
     def Suspend(self, request, context):
         global is_suspended
@@ -285,9 +301,29 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return
 
         is_suspended = True
-        threading.Timer(request.duration, wake_up_after_suspend).start()
-        return pb2.NoArgs()
+        threading.Timer(request.period, wake_up_after_suspend).start()
+        return pb2.EmptyMessage()
+    
+    def GetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
 
+        with state_lock:
+            value = hash_table.get(request.key)
+            success = (value is not None)
+            value = value if success else "None"
+
+            return pb2.GetReply(success=success, value=value)
+    
+    def SetVal(self, request, context): # need to be changed
+        global is_suspended
+        if is_suspended:
+            return
+
+        with state_lock:
+            hash_table[request.key] = request.value
+            return pb2.SetReply(success=True) # TODO: fix
 #
 # other
 #
