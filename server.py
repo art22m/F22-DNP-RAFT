@@ -137,7 +137,12 @@ def request_vote_worker_thread(id_to_request):
     ensure_connected(id_to_request)
     (_, _, stub) = state['nodes'][id_to_request]
     try:
-        resp = stub.RequestVote(pb2.NodeArgs(term=state['term'], node_id=state['id']), timeout=0.1)
+        resp = stub.RequestVote(pb2.VoteRequest(
+            term=state['term'], 
+            candidate_id=state['id'],
+            last_log_index=1, # TODO: fix
+            last_log_term=1
+        ), timeout=0.1)
 
         with state_lock:
             # if requested node replied for too long,
@@ -190,7 +195,14 @@ def heartbeat_thread(id_to_request):
 
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
-                resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id']), timeout=0.100)
+                resp = stub.AppendEntries(pb2.AppendRequest(
+                    term=state['term'], 
+                    leader_id=state['id'],
+                    prev_log_index=1, # TODO: fix
+                    prev_log_term=1,
+                    entries=[],
+                    leader_commit=1
+                ), timeout=0.100)
 
                 if (state['type'] != 'leader') or is_suspended:
                     continue
@@ -226,17 +238,18 @@ class Handler(pb2_grpc.RaftNodeServicer):
         
         reset_election_campaign_timer()
         with state_lock:
-            reply = {'result': False, 'term': state['term']}
+            result = False
             if state['term'] < request.term:
                 state['term'] = request.term
                 become_a_follower()
-            if state['term'] == request.term:
-                if state['voted_for_id'] == -1:
-                    become_a_follower()
-                    state['voted_for_id'] = request.node_id
-                    reply = {'result': True, 'term': state['term']}
-                    print(f"Voted for node {state['voted_for_id']}")
-            return pb2.ResultWithTerm(**reply)
+
+            if state['term'] == request.term and state['voted_for_id'] == -1:
+                become_a_follower()
+                state['voted_for_id'] = request.candidate_id
+                result = True
+                print(f"Voted for node {state['voted_for_id']}")
+
+            return pb2.ResultWithTerm(term=state['term'], result=result)
 
     def AppendEntries(self, request, context):
         global is_suspended
@@ -246,14 +259,16 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
 
         with state_lock:
-            reply = {'result': False, 'term': state['term']}
+            result = False
             if state['term'] < request.term:
                 state['term'] = request.term
                 become_a_follower()
+
             if state['term'] == request.term:
-                state['leader_id'] = request.node_id
-                reply = {'result': True, 'term': state['term']}
-            return pb2.ResultWithTerm(**reply)
+                state['leader_id'] = request.leader_id
+                result = True
+
+            return pb2.ResultWithTerm(term=state['term'], result=result)
 
     def GetLeader(self, request, context):
         global is_suspended

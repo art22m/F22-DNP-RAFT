@@ -20,15 +20,31 @@ def cmd_getleader(state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
-    resp = state1['stub'].GetLeader(pb2.NoArgs())
-    return f"{resp.leader_id} {resp.leader_addr}", state1
+    resp = state1['stub'].GetLeader(pb2.EmptyMessage())
+    return f"{resp.leader_id} {resp.address}", state1
 
 def cmd_suspend(duration, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
-    state1['stub'].Suspend(pb2.DurationArgs(duration=duration))
+    state1['stub'].Suspend(pb2.SuspendRequest(period=duration))
     return "", state1
+
+def cmd_setval(key, value, state):
+    (err_msg, state1) = ensure_connected(state)
+    if err_msg:
+        return (err_msg, state1)
+    state1['stub'].SetVal(pb2.SetRequest(key=key, value=value))
+    return "", state1
+
+def cmd_getval(key, state):
+    (err_msg, state1) = ensure_connected(state)
+    if err_msg:
+        return (err_msg, state1)
+    resp = state1['stub'].GetVal(pb2.GetRequest(key=key))
+    if resp.success:
+        return f"{resp.value}", state1
+    return "None", state1
 
 def exec_cmd(line, state):
     parts = line.split()
@@ -38,6 +54,10 @@ def exec_cmd(line, state):
         return cmd_getleader(state)
     elif parts[0] == 'suspend':
         return cmd_suspend(int(parts[1]), state)
+    elif parts[0] == 'setval':
+        return cmd_setval(parts[1], parts[2], state)
+    elif parts[0] == 'getval':
+        return cmd_getval(parts[1], state)
     elif parts[0] == 'quit':
         state['working'] = False
         return "The client ends", state
