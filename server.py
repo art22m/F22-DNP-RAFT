@@ -248,15 +248,11 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
         with state_lock:
             result = False
+
             if state['term'] < request.term:
                 state['term'] = request.term
                 become_a_follower()
-            #if state['term'] > term:
-            #    return pb2.VoteReply(**reply)
-            #if last_log_index < commit_id:
-            #    return pb2.VoteReply(**reply)
-            #if (last_log_index < len(logs)) and (logs[last_log_index][0] != last_log_term):
-            #    return pb2.VoteReply(**reply)
+
             if state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
                 state['voted_for_id'] = request.candidate_id
@@ -273,6 +269,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
 
         with state_lock:
+            # Check if request.entries == [] -> одна проверка \ иначе другое
             result = False
             if state['term'] < request.term:
                 state['term'] = request.term
@@ -320,6 +317,13 @@ class Handler(pb2_grpc.RaftNodeServicer):
         global is_suspended
         if is_suspended:
             return
+
+        if state['type'] != 'leader':
+            if state['leader_id'] == -1:
+                return pb2.SetReply(success=False) 
+
+            (_, _, stub) = state['nodes'][state['leader_id']]
+            return stub.SetVal(request)
 
         with state_lock:
             hash_table[request.key] = request.value
