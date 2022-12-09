@@ -30,6 +30,20 @@ def cmd_suspend(duration, state):
     state1['stub'].Suspend(pb2.SuspendRequest(period=duration))
     return "", state1
 
+def cmd_setval(key, value, state):
+    (err_msg, state1) = ensure_connected(state)
+    if err_msg:
+        return (err_msg, state1)
+    state1['stub'].SetVal(pb2.SetValRequest(key=key, value=value))
+    return "", state1
+
+def cmd_getval(key, state):
+    (err_msg, state1) = ensure_connected(state)
+    if err_msg:
+        return (err_msg, state1)
+    resp = state1['stub'].GetVal(pb2.GetValRequest(key=key))
+    return f"{resp.value}", state1
+
 def exec_cmd(line, state):
     parts = line.split()
     if parts[0] == 'connect':
@@ -41,6 +55,10 @@ def exec_cmd(line, state):
     elif parts[0] == 'quit':
         state['working'] = False
         return "The client ends", state
+    elif parts[0] == 'setval':
+        return cmd_setval(parts[1], parts[2], state)
+    elif parts[0] == 'getval':
+        return cmd_getval(parts[1], state)
     else:
         return f"Unknown command {parts[0]}", state
 
