@@ -244,16 +244,16 @@ class Handler(pb2_grpc.RaftNodeServicer):
             last_log_index = request.last_log_index
             last_log_term = request.last_log_term
 
-            reply = {'result': False, 'term': state['term']}
+            reply = {'term': state['term'], 'result': False}
             if state['term'] < term:
                 state['term'] = term
                 become_a_follower()
-            if state['term'] > term:
-                return pb2.VoteReply(**reply)
-            if last_log_index < commit_id:
-                return pb2.VoteReply(**reply)
-            if (last_log_index < len(logs)) and (logs[last_log_index][0] != last_log_term):
-                return pb2.VoteReply(**reply)
+            #if state['term'] > term:
+            #    return pb2.VoteReply(**reply)
+            #if last_log_index < commit_id:
+            #    return pb2.VoteReply(**reply)
+            #if (last_log_index < len(logs)) and (logs[last_log_index][0] != last_log_term):
+            #    return pb2.VoteReply(**reply)
             if state['term'] == term:
                 if state['voted_for_id'] == -1:
                     # reset_election_campaign_timer()
