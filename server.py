@@ -34,8 +34,8 @@ state = {
     'vote_count': 0,
     'voted_for_id': -1,
     'leader_id': -1,
-    'commit_idx': 0, # index of the last log entry on the server
-    'last_applied': 0, # index of the last applied log entry.
+    'commit_idx': -1, # index of the last log entry on the server
+    'last_applied': -1, # index of the last applied log entry.
     'logs': [], # List of entries [(term, command)]
     'next_idx':[], # {id : next_index}
     'match_idx':[], # {id : highest_log_idx}
@@ -147,7 +147,7 @@ def request_vote_worker_thread(id_to_request):
             term=state['term'], 
             candidate_id=state['id'],
             last_log_index=state['last_applied'],
-            last_log_term=len(state['logs']) - 1 if len(state['logs']) - 1 >= 0 else 0
+            last_log_term=state['logs'][-1][0] if len(state['logs']) > 0 else -1
         ), timeout=0.1)
 
         with state_lock:
@@ -248,19 +248,25 @@ class Handler(pb2_grpc.RaftNodeServicer):
         
         reset_election_campaign_timer()
         with state_lock:
-            result = False
-
             if state['term'] < request.term:
                 state['term'] = request.term
                 become_a_follower()
 
-            if state['term'] == request.term and state['voted_for_id'] == -1:
+            failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
+            has_logs = (request.last_log_index != -1)
+            if request.term < state['term']:
+                return failure_reply
+            elif has_logs and request.last_log_index < len(state['logs']) - 1:
+                return failure_reply
+            elif has_logs and request.last_log_index == len(state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
+                return failure_reply
+            elif state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
                 state['voted_for_id'] = request.candidate_id
-                result = True
                 print(f"Voted for node {state['voted_for_id']}")
+                return pb2.ResultWithTerm(term=state['term'], result=True)
 
-            return pb2.ResultWithTerm(term=state['term'], result=result)
+            return failure_reply
 
     def AppendEntries(self, request, context):
         global is_suspended
