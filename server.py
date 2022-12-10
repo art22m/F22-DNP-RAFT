@@ -34,16 +34,13 @@ state = {
     'vote_count': 0,
     'voted_for_id': -1,
     'leader_id': -1,
+    'commit_idx': 0, # index of the last log entry on the server
+    'last_applied': 0, # index of the last applied log entry.
+    'logs': [], # List of entries [(term, command)]
+    'next_idx':[], # {id : next_index}
+    'match_idx':[], # {id : highest_log_idx}
+    'hash_table' : {} # {key : value}
 }
-
-commit_idx = 0 # index of the last log entry on the server
-last_applied_idx = 0 # index of the last applied log entry.
-
-logs = [] # List of entries [{term, command}]
-next_idx = {} # {id : next_index}
-match_idx = {} # {id : highest_log_idx}
-    
-hash_table = {} # {key : value}
 
 # for debugging
 START_TIME = time.time()
@@ -149,8 +146,8 @@ def request_vote_worker_thread(id_to_request):
         resp = stub.RequestVote(pb2.VoteRequest(
             term=state['term'], 
             candidate_id=state['id'],
-            last_log_index=1, # TODO: fix
-            last_log_term=1
+            last_log_index=state['last_applied'],
+            last_log_term=len(state['logs']) - 1 if len(state['logs']) - 1 >= 0 else 0
         ), timeout=0.1)
 
         with state_lock:
@@ -224,6 +221,10 @@ def heartbeat_thread(id_to_request):
                 threading.Timer(HEARTBEAT_DURATION*0.001, heartbeat_events[id_to_request].set).start()
         except grpc.RpcError:
             reopen_connection(id_to_request)
+
+def replicate_logs():
+    print(1)
+     
 
 #
 # gRPC server handler
@@ -307,7 +308,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return
 
         with state_lock:
-            value = hash_table.get(request.key)
+            value = state['hash_table'].get(request.key)
             success = (value is not None)
             value = value if success else "None"
 
@@ -326,8 +327,10 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return stub.SetVal(request)
 
         with state_lock:
-            hash_table[request.key] = request.value
+            # state['hash_table'][request.key] = request.value
+            state['logs'].append((state['term'], ('set', request.key, request.value)))
             return pb2.SetReply(success=True) # TODO: fix
+
 #
 # other
 #
