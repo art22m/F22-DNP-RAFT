@@ -204,10 +204,10 @@ def heartbeat_thread(id_to_request):
                 resp = stub.AppendEntries(pb2.AppendRequest(
                     term=state['term'], 
                     leader_id=state['id'],
-                    prev_log_index=1, # TODO: fix
-                    prev_log_term=1,
+                    prev_log_index=-1,
+                    prev_log_term=-1,
                     entries=[],
-                    leader_commit=1
+                    leader_commit=state['commit_idx']
                 ), timeout=0.100)
 
                 if (state['type'] != 'leader') or is_suspended:
@@ -276,17 +276,55 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
 
         with state_lock:
-            # Check if request.entries == [] -> одна проверка \ иначе другое
-            result = False
-            if state['term'] < request.term:
+            if request.term > state['term']:
                 state['term'] = request.term
                 become_a_follower()
-
-            if state['term'] == request.term:
+            
+            failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
+            has_new_entries = (len(request.entries) > 0)
+            if request.term < state['term']:
+                return failure_reply
+            elif request.prev_log_index > len(state['logs']) - 1:
+                return failure_reply
+            elif request.term == state['term']:
                 state['leader_id'] = request.leader_id
-                result = True
 
-            return pb2.ResultWithTerm(term=state['term'], result=result)
+                sucess_reply = pb2.ResultWithTerm(term=state['term'], result=True)
+                if not has_new_entries:
+                    return sucess_reply
+
+                entries = []
+                for entry in request.entries:
+                    entries.append((entry.term, (entry.key, entry.value)))
+
+                start_idx = request.prev_log_index + 1
+
+                logs_start = state['logs'][:start_idx]
+                logs_middle = state['logs'][start_idx : start_idx + len(entries)]
+                logs_end = state['logs'][start_idx + len(entries):]
+                
+                has_conflicts = False
+                for i in range(0, len(logs_middle)):
+                    if logs_middle[i][0] != entries[i][0]:
+                        has_conflicts = True
+                        break
+
+                if has_conflicts:
+                    state['logs'] = logs_start + entries
+                else: 
+                    state['logs'] = logs_start + entries + logs_end
+
+                if request.leader_commit > state['commit_idx']:
+                    state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
+
+                    while state['commit_idx'] > state['last_applied']:
+                        _, key, value = state['logs'][state['last_applied']][1]
+                        state['hash_tabe'][key] = value
+                        state['last_applied'] += 1
+
+                return sucess_reply
+
+            return failure_reply
 
     def GetLeader(self, request, context):
         global is_suspended
