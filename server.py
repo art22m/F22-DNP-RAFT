@@ -39,6 +39,7 @@ state = {
     'logs': [], # List of entries [(term, command)]
     'next_idx':[], # {id : next_index}
     'match_idx':[], # {id : highest_log_idx}
+    'replicate_vote_count':0,
     'hash_table' : {} # {key : value}
 }
 
@@ -97,6 +98,10 @@ def has_enough_votes():
     required_votes = (len(state['nodes'])//2) + 1
     return state['vote_count'] >= required_votes
 
+def has_enough_replicate_votes():
+    required_votes = (len(state['nodes'])//2) + 1
+    return state['replicate_vote_count'] >= required_votes
+
 def finalize_election():
     stop_election_campaign_timer()
     with state_lock:
@@ -146,7 +151,7 @@ def request_vote_worker_thread(id_to_request):
         resp = stub.RequestVote(pb2.VoteRequest(
             term=state['term'], 
             candidate_id=state['id'],
-            last_log_index=state['last_applied'],
+            last_log_index=len(state['logs']) - 1,
             last_log_term=state['logs'][-1][0] if len(state['logs']) > 0 else -1
         ), timeout=0.1)
 
@@ -222,9 +227,93 @@ def heartbeat_thread(id_to_request):
         except grpc.RpcError:
             reopen_connection(id_to_request)
 
+def replicate_logs_thread(id_to_request):
+    if (state['type'] != 'leader') or is_suspended:
+        return
+    
+    entries = []
+    idx_from = state['next_idx'][id_to_request]
+    for (term, (_, key, value)) in state['logs'][idx_from:]:
+        entries.append(pb2.Entry(term=term, key=key, value=value))
+    
+    try:
+        ensure_connected(id_to_request)
+        (_, _, stub) = state['nodes'][id_to_request]
+
+        resp = stub.AppendEntries(pb2.AppendRequest(
+            term=state['term'], 
+            leader_id=state['id'],
+            prev_log_index=state['next_idx'][id_to_request] - 1,
+            prev_log_term=state['logs'][state['next_idx'][id_to_request] - 1][0] if state['next_idx'][id_to_request] > 0 else -1,
+            entries=entries,
+            leader_commit=state['commit_idx']
+        ), timeout=0.100)
+
+        with state_lock:
+            print(f"Get result from {id_to_request} = {resp.result}")
+            if resp.result:
+                state['match_idx'][id_to_request] = state['next_idx'][id_to_request]
+                state['next_idx'][id_to_request] += len(entries)
+            else:
+                state['next_idx'][id_to_request] -= 1
+                state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request], state['next_idx'][id_to_request] - 1)
+            
+    except grpc.RpcError:
+        # print(f"No connection {id_to_request}")
+        pass
+#
+# Logs replication
+#
+
+def print_state1():
+    print(f"commit_idx: {state['commit_idx']}")
+    print(f"last_applied: {state['last_applied']}")
+    print(f"hash_table len: {len(state['hash_table'])}")
+    print(f"logs len: {len(state['logs'])}")
+
 def replicate_logs():
-    print(1)
+    while not is_terminating:
+        time.sleep(0.5)
+
+        if (state['type'] != 'leader') or is_suspended or len(state['logs']) == 0:
+            continue
+        
+        # print("Replicate logs")
+
+        curr_id = 0
+        with state_lock:
+            curr_id = state['id']
+            state['match_idx'][state['id']] = len(state['logs']) - 1
+
+        threads = []
+        for node_id in nodes:
+            if curr_id == node_id:
+                continue
+
+            t = threading.Thread(target=replicate_logs_thread, args=(node_id,))
+            t.start()
+            threads.append(t)
      
+        for thread in threads:
+            thread.join()
+
+        with state_lock:
+            for i in range(0, len(state['match_idx'])):
+                if state['match_idx'][i] > state['commit_idx']:
+                    state['replicate_vote_count'] += 1
+
+            if has_enough_replicate_votes():
+                print("Success commit")
+                state['commit_idx'] += 1
+
+            print_state1()
+
+            while state['commit_idx'] > state['last_applied']:
+                _, key, value = state['logs'][state['last_applied']][1]
+                state['hash_table'][key] = value
+                state['last_applied'] += 1
+
+            state['replicate_vote_count'] = 0
 
 #
 # gRPC server handler
@@ -253,12 +342,11 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 become_a_follower()
 
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
-            has_logs = (request.last_log_index != -1)
             if request.term < state['term']:
                 return failure_reply
-            elif has_logs and request.last_log_index < len(state['logs']) - 1:
+            elif request.last_log_index < len(state['logs']) - 1:
                 return failure_reply
-            elif has_logs and request.last_log_index == len(state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
+            elif len(state['logs']) != 0 and request.last_log_index == len(state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
                 return failure_reply
             elif state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
@@ -290,12 +378,10 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 state['leader_id'] = request.leader_id
 
                 sucess_reply = pb2.ResultWithTerm(term=state['term'], result=True)
-                if not has_new_entries:
-                    return sucess_reply
 
                 entries = []
                 for entry in request.entries:
-                    entries.append((entry.term, (entry.key, entry.value)))
+                    entries.append((entry.term, ('set', entry.key, entry.value)))
 
                 start_idx = request.prev_log_index + 1
 
@@ -315,12 +401,21 @@ class Handler(pb2_grpc.RaftNodeServicer):
                     state['logs'] = logs_start + entries + logs_end
 
                 if request.leader_commit > state['commit_idx']:
+                    print("-----")
+                    print(f"Leader commit: {request.leader_commit}")
+                    print_state1()
+                    print("-----")
+
                     state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
 
                     while state['commit_idx'] > state['last_applied']:
                         _, key, value = state['logs'][state['last_applied']][1]
-                        state['hash_tabe'][key] = value
+                        state['hash_table'][key] = value
                         state['last_applied'] += 1
+
+                    print("-----")
+                    print_state1()
+                    print("-----")
 
                 return sucess_reply
 
@@ -335,7 +430,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return
 
         (host, port, _) = state['nodes'][state['leader_id']]
-        return pb2.GetLeaderReply(leader_id=state['leader_id'], address=f"{host}:{[port]}")
+        return pb2.GetLeaderReply(leader_id=state['leader_id'], address=f"{host}:{port}")
 
     def Suspend(self, request, context):
         global is_suspended
@@ -358,7 +453,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
             return pb2.GetReply(success=success, value=value)
     
-    def SetVal(self, request, context): # need to be changed
+    def SetVal(self, request, context):
         global is_suspended
         if is_suspended:
             return
@@ -367,13 +462,20 @@ class Handler(pb2_grpc.RaftNodeServicer):
             if state['leader_id'] == -1:
                 return pb2.SetReply(success=False) 
 
+            ensure_connected(state['leader_id'])
+
             (_, _, stub) = state['nodes'][state['leader_id']]
-            return stub.SetVal(request)
+            try:
+                resp = stub.SetVal(pb2.SetRequest(key=request.key, value=request.value), timeout=0.100)
+            except:
+                return pb2.SetReply(success=False) 
+
+            return resp
 
         with state_lock:
-            # state['hash_table'][request.key] = request.value
             state['logs'].append((state['term'], ('set', request.key, request.value)))
-            return pb2.SetReply(success=True) # TODO: fix
+            print(f"Append log: {request.key} {request.value}")
+            return pb2.SetReply(success=True)
 
 #
 # other
@@ -410,16 +512,21 @@ def main(id, nodes):
 
     hearbeat_threads = []
     for node_id in nodes:
-        if id != node_id:
-            heartbeat_events[node_id] = threading.Event()
-            t = threading.Thread(target=heartbeat_thread, args=(node_id,))
-            t.start()
-            hearbeat_threads.append(t)
+       if id != node_id:
+           heartbeat_events[node_id] = threading.Event()
+           t = threading.Thread(target=heartbeat_thread, args=(node_id,))
+           t.start()
+           hearbeat_threads.append(t)
 
     state['id'] = id
     state['nodes'] = nodes
     state['type'] = 'follower'
     state['term'] = 0
+    state['next_idx'] = [0] * len(state['nodes'])
+    state['match_idx'] = [-1] * len(state['nodes'])
+
+    log_replication_th = threading.Thread(target=replicate_logs)
+    log_replication_th.start()
 
     server = start_server(state)
     (host, port, _) = nodes[id]

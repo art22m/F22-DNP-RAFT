@@ -32,4 +32,4 @@
 
 arr = []
 
-print(arr[-1][0] if False else -123)
+print(arr[1:])
