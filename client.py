@@ -4,7 +4,6 @@ import raft_pb2_grpc as pb2_grpc
 import raft_pb2 as pb2
 
 
-
 def ensure_connected(state):
     if not state['node_addr']:
         return "No address to connect to was specified", state
@@ -12,9 +11,11 @@ def ensure_connected(state):
     state['stub'] = pb2_grpc.RaftNodeStub(channel)
     return None, state
 
+
 def cmd_connect(node_addr, state):
     state['node_addr'] = node_addr
     return "", state
+
 
 def cmd_getleader(state):
     (err_msg, state1) = ensure_connected(state)
@@ -23,6 +24,7 @@ def cmd_getleader(state):
     resp = state1['stub'].GetLeader(pb2.EmptyMessage())
     return f"{resp.leader_id} {resp.address}", state1
 
+
 def cmd_suspend(duration, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
@@ -30,12 +32,14 @@ def cmd_suspend(duration, state):
     state1['stub'].Suspend(pb2.SuspendRequest(period=int(duration)))
     return "", state1
 
+
 def cmd_setval(key, value, state):
     (err_msg, state1) = ensure_connected(state)
     if err_msg:
         return (err_msg, state1)
     state1['stub'].SetVal(pb2.SetRequest(key=key, value=value))
     return "", state1
+
 
 def cmd_getval(key, state):
     (err_msg, state1) = ensure_connected(state)
@@ -45,6 +49,7 @@ def cmd_getval(key, state):
     if resp.success:
         return f"{resp.value}", state1
     return "None", state1
+
 
 def exec_cmd(line, state):
     parts = line.split()
@@ -63,6 +68,7 @@ def exec_cmd(line, state):
         return "The client ends", state
     else:
         return f"Unknown command {parts[0]}", state
+
 
 if __name__ == '__main__':
     # channel = grpc.insecure_channel(f'127.0.0.1:{registry_port}')
