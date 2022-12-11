@@ -20,12 +20,16 @@
 
 # print(logs)
 
-hash_table = {}
-hash_table["1"] = "3"
+# # hash_table = {}
+# hash_table["1"] = "3"
 
-# print(type(hash_table.get("12", "N1ne")))
-print(hash_table.get("12"))
-val = hash_table.get("1")
-success = (val is not None)
+# # print(type(hash_table.get("12", "N1ne")))
+# print(hash_table.get("12"))
+# val = hash_table.get("1")
+# success = (val is not None)
 
-print(success)
+# print(success)
+
+arr = []
+
+print(arr[1:])

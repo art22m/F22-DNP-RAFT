@@ -1,428 +1,578 @@
-"""
-|Server|
-DNP Lab: RAFT
-Students: Vagif Khalilov, Artem Murashko
-Emails: v.khalilov@innopolis.university, ar.murashko@innopolis.univeristy
-Group: BS20-SD-01
-"""
-
-# Imports
-
-import raft_pb2 as pb2
-import raft_pb2_grpc as pb2_grpc
+import sys
+import random
+import concurrent.futures
+import threading
+import time
 
 import grpc
-import sys
-import signal
-import enum
-import random
-import time
-import datetime
 
-from concurrent import futures
-from threading import Thread
+import raft_pb2_grpc as pb2_grpc
+import raft_pb2 as pb2
 
-# Constants
+#
+# constants
+#
 
-MAX_WORKERS = 10
+# [HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x*10 for x in [50, 150, 300]]
+[HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x for x in [50, 150, 300]]
+
+#
+# global state
+#
+
+is_terminating = False
+is_suspended = False
+state_lock = threading.Lock()
+election_timer_fired = threading.Event()
+heartbeat_events = {}
+state = {
+    'election_campaign_timer': None,
+    'election_timeout': -1,
+    'type': 'follower',
+    'nodes': None,
+    'term': 0,
+    'vote_count': 0,
+    'voted_for_id': -1,
+    'leader_id': -1,
+    'commit_idx': -1,  # index of the last log entry on the server
+    'last_applied': -1,  # index of the last applied log entry
+    'logs': [],  # List of entries [(term, command)]
+    'next_idx': [],  # [next_index]
+    'match_idx': [],  # [highest_log_idx]
+    'replicate_vote_count': 0,
+    'hash_table': {}  # {key : value}
+}
+
+# for debugging
+START_TIME = time.time()
 
 
-# Helpers
-
-def terminate(message, closure=None):
-    print(message)
-    if closure is not None:
-        closure()
-    sys.exit()
+def log_prefix():
+    time_since_start = '{:07.3f}'.format(time.time() - START_TIME)
+    return f"{state['term']}\t{time_since_start}\t{state['type']}\t[id={state['id']} leader_id={state['leader_id']} vote_count={state['vote_count']} voted_for={state['voted_for_id']}] "
 
 
-# Server
+#
+# election timer functions
+#
 
-class State(enum.Enum):
-    follower = 0
-    candidate = 1
-    leader = 2
+def select_election_timeout():
+    return random.randrange(ELECTION_DURATION_FROM, ELECTION_DURATION_TO) * 0.001
 
 
-class ServerHandler(pb2_grpc.RaftServiceServicer):
+# def fire_election_timer(id):
+#     state['current_timer_id'] = id
+#     election_timer_fired.set()
 
-    # Properties
+def reset_election_campaign_timer():
+    stop_election_campaign_timer()
+    state['election_campaign_timer'] = threading.Timer(state['election_timeout'], election_timer_fired.set)
+    state['election_campaign_timer'].start()
 
-    term = None
-    timer = None
-    state = None
 
-    id = None
-    socket = '127.0.0.1:5001'
+def select_new_election_timeout_duration():
+    state['election_timeout'] = select_election_timeout()
 
-    servers = {}  # {id : (server_stub, socket)}
-    servers_number = None
 
-    # Config
+def stop_election_campaign_timer():
+    if state['election_campaign_timer']:
+        state['election_campaign_timer'].cancel()
 
-    is_voted_at_this_term = False
-    is_suspended = False
 
-    should_reset_timer = True
+#
+# elections
+#
 
-    votes_number = 0
+def start_election():
+    with state_lock:
+        state['type'] = 'candidate'
+        state['leader_id'] = -1
+        state['term'] += 1
+        # vote for ourselves
+        state['vote_count'] = 1
+        state['voted_for_id'] = state['id']
 
-    leader_id = 0
+    print(f"I am a candidate. Term: {state['term']}")
+    for id in state['nodes'].keys():
+        if id != state['id']:
+            t = threading.Thread(target=request_vote_worker_thread, args=(id,))
+            t.start()
+    # now RequestVote threads have started,
+    # lets set a timer for the end of the election
+    reset_election_campaign_timer()
 
-    commit_idx = 0 # index of the last log entry on the server
-    last_applied_idx = 0 # index of the last applied log entry.
 
-    logs = [] # List of entries [{term, command}]
-    next_idx = {} # {id : next_index}
-    match_idx = {} # {id : highest_log_idx}
-    
-    hash_table = {} # {key : value}
+def has_enough_votes():
+    required_votes = (len(state['nodes']) // 2) + 1
+    return state['vote_count'] >= required_votes
 
-    # Constants 
 
-    CONFIG_PATH = 'config.conf'
+def has_enough_replicate_votes():
+    required_votes = (len(state['nodes']) // 2) + 1
+    return state['replicate_vote_count'] >= required_votes
 
-    TIMER_FROM = 150
-    TIMER_TO = 300
 
-    # Threads
-
-    timer_thread = None
-    leader_thread = None
-    leader_election_thread = None
-
-    # Init
-
-    def __init__(self, server_id):
-        super().__init__()
-
-        self.term = 0
-        self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
-        self.state = State.follower
-
-        self._read_and_create_stubs(self.CONFIG_PATH)
-        self.servers_number = len(self.servers)
-        self.id = server_id
-
-        if int(server_id) not in self.servers:
-            terminate('No such id in the config file')
-        _, self.socket = self.servers[int(server_id)]
-
-        print(f'Server is started at {self.socket}')
-        self._print_state()
-
-        self.timer_thread = Thread(target=self._start_timer_thread, args=(), daemon=True)
-        self.timer_thread.start()
-
-    # Public Methods
-
-    def request_vote(self, request, context): # DONE
-        if self.is_suspended:
+def finalize_election():
+    stop_election_campaign_timer()
+    with state_lock:
+        if state['type'] != 'candidate':
             return
 
-        self.should_reset_timer = True
+        if has_enough_votes():
+            # become a leader
+            state['type'] = 'leader'
+            state['leader_id'] = state['id']
+            state['vote_count'] = 0
+            state['voted_for_id'] = -1
 
-        failure_reply = pb2.VoteReply(term=self.term, result=False)
-        if request.term < self.term:
-            return failure_reply
-        elif self.is_voted_at_this_term:
-            return failure_reply
-        elif request.last_log_index < self.commit_id:
-            return failure_reply
-        elif (request.last_log_index < len(self.logs)) and (self.logs[request.last_log_index][0] != request.last_log_term):
-            return failure_reply
-        else:
-            self.is_voted_at_this_term = True
-            self.state = State.follower
-            self.leader_id = request.candidate_id
-            self.term = request.term
-            
-            print(f'Voted for node {self.leader_id}')
-            self._print_state()
+            for i in range(0, len(state['nodes'])):
+                if i == state['id']:
+                    continue
 
-            return pb2.VoteReply(term=self.term, result=True)
+                state['next_idx'][i] = 0
+                state['match_idx'][i] = -1
 
-    def append_entries(self, request, context): # TODO: add code for adding new entries in hash_table
-        if self.is_suspended:
+            start_heartbeats()
+            print("Votes received")
+            print(f"I am a leader. Term: {state['term']}")
             return
-
-        self.should_reset_timer = True
-
-        success = ((self.term <= request.term) and (request.prev_log_index < len(self.logs)))
-        if success:
-            self.term = request.term
-            self.leader_id = request.leader_id
-            
-            start_idx = request.prev_log_index + 1
-            logs_start = self.logs[:start_idx]
-            logs_middle = self.logs[start_idx : start_idx + len(request.entries)]
-            logs_end = self.logs[start_idx + len(request.entries):]
-
-            is_conflict = False
-            for i in range(0, logs_middle):
-                if logs_middle[i] != request.entries[i]:
-                    is_conflict = True
-                    break
-            
-            last_new_entry_idx = 0
-            if is_conflict:
-                self.logs = logs_start + request.entries
-                last_new_entry_idx = len(self.logs) - 1 if len(self.logs) > 0 else 0
-            else:
-                self.logs = logs_start + request.entries + logs_end
-                last_new_entry_idx = len(logs_start + request.entries) - 1 if len(logs_start + request.entries) > 0 else 0
-
-            if request.commit_idx > self.commit_idx:
-                self.commit_idx = min(request.commit_idx, last_new_entry_idx)
-
-            if self.state != State.follower:
-                self.state = State.follower
-                self._print_state()
-
-        return pb2.AppendReply(term=self.term, success=success)
-
-    def get_leader(self, request, context):
-        if self.is_suspended or not self.is_voted_at_this_term:
-            return
-
-        print('Command from client: getleader')
-
-        _, leader_socket = self.servers[self.leader_id]
-        print(f'{self.leader_id} {leader_socket}')
-
-        return pb2.GetLeaderReply(leader_id=self.leader_id, address=leader_socket)
-
-    def suspend(self, request, context):
-        if self.is_suspended:
-            return
-
-        print(f'Command from client: suspend {request.period}')
-        print(f'Sleeping for {request.period} seconds')
-        self.is_suspended = True
-        time.sleep(request.period)
-        self.is_suspended = False
-
-        return pb2.EmptyMessage()
-
-    def set_val(self, request, context):
-        if self.is_suspended:
-            return
-
-        print(f'Command from client: set {request.key} {request.value}')
-
-        success = False
-        if self.state == State.follower:
-            leader_stub, _ = self.servers[self.leader_id]
-            try:
-                response = leader_stub.SetVal(pb2.SetRequest(key=request.key, value=request.value))
-                success = response.success
-            except:
-                success = False
-        elif self.state == State.candidate:
-            success = False
-        else: 
-            # add entry to log
-            self.logs.append((self.term, ('set', request.key, request.value)))
-            self.commit_idx += 1
-
-            current_commit_idx = self.commit_idx
-
-            time.sleep(0.5) # TODO: decrease
-            
-            success = (current_commit_idx <= self.last_applied_idx)
+        # if election was unsuccessful
+        # then pick new timeout duration
+        become_a_follower()
+        select_new_election_timeout_duration()
+        reset_election_campaign_timer()
 
 
-        return pb2.SetReply(success=success)
+def become_a_follower():
+    if state['type'] != 'follower':
+        print(f"I am a follower. Term: {state['term']}")
+    state['type'] = 'follower'
+    state['voted_for_id'] = -1
+    state['vote_count'] = 0
+    # state['leader_id'] = -1
 
 
-    def get_val(self, request, context):
-        if self.is_suspended:
-            return
-            
-        value = self.hash_table.get(request.key)
+#
+# heartbeats
+#
 
-        success = (value is not None)
-        value = value if success else "None"
-        return pb2.GetReply(success=success, value=value)
-        
-        
-    # Private Methods
+def start_heartbeats():
+    for id in heartbeat_events:
+        heartbeat_events[id].set()
 
-    def _print_state(self):
-        print(f'I am a {self.state.name}. Term: {self.term}')
 
-    def _read_and_create_stubs(self, path):
+#
+# thread functions
+#
+
+def request_vote_worker_thread(id_to_request):
+    ensure_connected(id_to_request)
+    (_, _, stub) = state['nodes'][id_to_request]
+    try:
+        resp = stub.RequestVote(pb2.VoteRequest(
+            term=state['term'],
+            candidate_id=state['id'],
+            last_log_index=len(state['logs']) - 1,
+            last_log_term=state['logs'][-1][0] if len(state['logs']) > 0 else -1
+        ), timeout=0.1)
+
+        with state_lock:
+            # if requested node replied for too long,
+            # and during this time candidate stopped
+            # being a candidate, then do nothing
+            if state['type'] != 'candidate' or is_suspended:
+                return
+
+            if state['term'] < resp.term:
+                state['term'] = resp.term
+                become_a_follower()
+                reset_election_campaign_timer()
+            elif resp.result:
+                state['vote_count'] += 1
+
+        # got enough votes, no need to wait for the end of the timeout
+        if has_enough_votes():
+            finalize_election()
+    except grpc.RpcError:
+        reopen_connection(id_to_request)
+
+
+def election_timeout_thread():
+    while not is_terminating:
+        if election_timer_fired.wait(timeout=0.5):
+            election_timer_fired.clear()
+            if is_suspended:
+                continue
+
+            # election timer just fired
+            if state['type'] == 'follower':
+                # node didn't receive any heartbeats on time
+                # that's why it should become a candidate
+                print("The leader is dead")
+                start_election()
+            elif state['type'] == 'candidate':
+                # okay, election is over
+                # we need to count votes
+                finalize_election()
+            # if somehow we got here while being a leader,
+            # then do nothing
+
+
+def heartbeat_thread(id_to_request):
+    while not is_terminating:
         try:
-            with open(path) as config:
-                for line in config:
-                    conf_id, ipaddr, port = line.split()
+            if heartbeat_events[id_to_request].wait(timeout=0.5):
+                heartbeat_events[id_to_request].clear()
 
-                    socket = f"{ipaddr}:{port}"
-                    server_channel = grpc.insecure_channel(socket)
-                    server_stub = pb2_grpc.RaftServiceStub(server_channel)
+                if (state['type'] != 'leader') or is_suspended:
+                    continue
 
-                    self.servers[int(conf_id)] = (server_stub, socket)
+                ensure_connected(id_to_request)
+                (_, _, stub) = state['nodes'][id_to_request]
 
-        except Exception as e:
-            terminate(f'Unable to open/parse {path} file:\n{e}')
+                # In case this is heartbeat send -404 as value in replicate logs params
+                resp = stub.AppendEntries(pb2.AppendRequest(
+                    term=state['term'],
+                    leader_id=state['id'],
+                    prev_log_index=-404,
+                    prev_log_term=-404,
+                    entries=None,
+                    leader_commit=-404
+                ), timeout=0.100)
 
-    def _start_timer_thread(self):
-        time_start = datetime.datetime.now()
-        while True:
-            if self.is_suspended:
-                continue
+                if (state['type'] != 'leader') or is_suspended:
+                    continue
 
-            if self.should_reset_timer:
-                self.should_reset_timer = False
-                time_start = datetime.datetime.now()
-                continue
+                with state_lock:
+                    if state['term'] < resp.term:
+                        reset_election_campaign_timer()
+                        state['term'] = resp.term
+                        become_a_follower()
+                threading.Timer(HEARTBEAT_DURATION * 0.001, heartbeat_events[id_to_request].set).start()
+        except grpc.RpcError:
+            reopen_connection(id_to_request)
 
-            if (datetime.datetime.now() - time_start).total_seconds() * 1000 <= self.timer:
-                continue
 
-            if self.state == State.follower:
-                self.should_reset_timer = True
-                self.state = State.candidate
-                self.term += 1
+def replicate_logs_thread(id_to_request):
+    if (state['type'] != 'leader') or is_suspended:
+        return
 
-                print('The leader is dead')
-                self._print_state()
+    entries = []
+    idx_from = state['next_idx'][id_to_request]
+    for (term, (_, key, value)) in state['logs'][idx_from:]:
+        entries.append(pb2.Entry(term=term, key=key, value=value))
 
-                self.leader_election_thread = Thread(target=self._start_leader_election, args=(), daemon=True)
-                self.leader_election_thread.start()
+    try:
+        ensure_connected(id_to_request)
 
-            elif self.state == State.candidate:
-                self.should_reset_timer = True
+        (_, _, stub) = state['nodes'][id_to_request]
+        resp = stub.AppendEntries(pb2.AppendRequest(
+            term=state['term'],
+            leader_id=state['id'],
+            prev_log_index=state['next_idx'][id_to_request] - 1,
+            prev_log_term=state['logs'][state['next_idx'][id_to_request] - 1][0] if state['next_idx'][id_to_request] > 0 else -1,
+            entries=entries,
+            leader_commit=state['commit_idx']
+        ), timeout=0.100)
 
-                if self.votes_number >= self.servers_number / 2:
-                    self._become_leader()
-                else:
-                    self.timer = random.randint(self.TIMER_FROM, self.TIMER_TO)
-                    self.state = State.follower
-                    self._print_state()
+        with state_lock:
+            if resp.result:
+                state['next_idx'][id_to_request] = len(state['logs'])
+                state['match_idx'][id_to_request] = len(state['logs']) - 1
+            else:
+                state['next_idx'][id_to_request] = max(state['next_idx'][id_to_request] - 1, 0)
+                state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request],
+                                                        state['next_idx'][id_to_request] - 1)
 
-            elif self.state == State.leader:
-                self.should_reset_timer = True
+    except grpc.RpcError:
+        state['next_idx'][id_to_request] = 0
+        state['match_idx'][id_to_request] = -1
+        reopen_connection(id_to_request)
 
-    # Election 
 
-    def _start_leader_election(self):
-        if self.is_suspended or self.state != State.candidate:
-            return
+#
+# Logs replication
+#
 
-        self.votes_number = 1
-        self.is_voted_at_this_term = True
-        print(f"Voted for node {self.id}")
+def replicate_logs():
+    while not is_terminating:
+        time.sleep(0.5)
+
+        if (state['type'] != 'leader') or is_suspended or len(state['logs']) == 0:
+            continue
+
+        with state_lock:
+            curr_id = state['id']
+            state['match_idx'][state['id']] = len(state['logs']) - 1
 
         threads = []
-        for current_id, (server_stub, _) in self.servers.items():
-            if current_id != self.id:
-                threads.append(Thread(target=self._request_vote, args=(server_stub,), daemon=True))
-
-        [t.start() for t in threads]
-        [t.join() for t in threads]
-
-        if self.state != State.candidate:
-            return
-
-        # print(f'Votes received: {self.votes_number} / {self.servers_number}')
-        print(f'Votes received')
-        if self.votes_number >= self.servers_number / 2:
-            self._become_leader()
-
-    def _request_vote(self, server_stub):
-        if self.is_suspended or self.state != State.candidate:
-            return
-
-        message = pb2.VoteRequest(term=self.term, candidate_id=self.id)
-        try:
-            response = server_stub.request_vote(message)
-
-            if response.result:
-                self.votes_number += 1
-            elif self.term < response.term:
-                self.state = State.follower
-                self.term = response.term
-                self._print_state()
-        except:
-            return
-
-    # Heartbeat 
-    def _become_leader(self): # TODO: rewrite this
-        if self.state == State.leader:
-            return
-
-        self.should_reset_timer = True
-        self.state = State.leader
-        self.leader_id = self.id
-        self._print_state()
-
-        self.leader_thread = Thread(target=self._start_leader_procedure, args=(), daemon=True)
-        self.leader_thread.start()
-        self.next_idx = [self.logs_number] * len(self.servers_number)
-        self.match_idx = [0] * len(self.servers_number)
-
-    def _start_leader_procedure(self):
-        while True:
-            if self.state != State.leader:
-                break
-
-            if self.is_suspended:
+        for node_id in nodes:
+            if curr_id == node_id:
                 continue
 
-            self.should_reset_timer = True
+            t = threading.Thread(target=replicate_logs_thread, args=(node_id,))
+            t.start()
+            threads.append(t)
 
-            threads = []
-            for current_id, (server_stub, _) in self.servers.items():
-                if current_id != self.id:
-                    threads.append(Thread(target=self._send_heartbeat, args=(server_stub,), daemon=True))
+        for thread in threads:
+            thread.join()
 
-            [t.start() for t in threads]
-            [t.join() for t in threads]
+        with state_lock:
+            state['replicate_vote_count'] = 0
+            for i in range(0, len(state['match_idx'])):
+                if state['match_idx'][i] > state['commit_idx']:
+                    state['replicate_vote_count'] += 1
 
-            time.sleep(0.05)
+            if has_enough_replicate_votes():
+                state['commit_idx'] += 1
 
-    def _send_heartbeat(self, server_stub):
-        if self.is_suspended or self.state != State.leader:
+            while state['commit_idx'] > state['last_applied']:
+                state['last_applied'] += 1
+                _, key, value = state['logs'][state['last_applied']][1]
+                state['hash_table'][key] = value
+
+
+#
+# gRPC server handler
+#
+
+# helpers that sets timers running again
+# when suspend has ended
+def wake_up_after_suspend():
+    global is_suspended
+    is_suspended = False
+    if state['type'] == 'leader':
+        start_heartbeats()
+    else:
+        reset_election_campaign_timer()
+
+
+class Handler(pb2_grpc.RaftNodeServicer):
+    def RequestVote(self, request, context):
+        global is_suspended
+        if is_suspended:
             return
 
-        self.should_reset_timer = True
+        reset_election_campaign_timer()
+        with state_lock:
+            if state['term'] < request.term:
+                state['term'] = request.term
+                become_a_follower()
 
-        message = pb2.AppendRequest(term=self.term, leader_id=self.id)
-        try:
-            response = server_stub.append_entries(message) # Modify this
+            failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
+            if request.term < state['term']:
+                return failure_reply
+            elif request.last_log_index < len(state['logs']) - 1:
+                return failure_reply
+            elif len(state['logs']) != 0 and request.last_log_index == len(
+                    state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
+                return failure_reply
+            elif state['term'] == request.term and state['voted_for_id'] == -1:
+                become_a_follower()
+                state['voted_for_id'] = request.candidate_id
+                print(f"Voted for node {state['voted_for_id']}")
+                return pb2.ResultWithTerm(term=state['term'], result=True)
 
-            if self.term < response.term:
-                self.term = response.term
-                self.state = State.follower
+            return failure_reply
 
-        except:
+    def AppendEntries(self, request, context):
+        global is_suspended
+        if is_suspended:
             return
 
+        reset_election_campaign_timer()
 
-def start_server(server_id):
-    server_handler = ServerHandler(server_id)
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_WORKERS))
-    pb2_grpc.add_RaftServiceServicer_to_server(server_handler, server)
-    server.add_insecure_port(server_handler.socket)
+        with state_lock:
+            is_heartbeat = (
+                    request.prev_log_index == -404 or
+                    request.prev_log_term == -404 or
+                    request.leader_commit == -404
+            )
+
+            if request.term > state['term']:
+                state['term'] = request.term
+                become_a_follower()
+            if is_heartbeat and request.term == state['term']:
+                state['leader_id'] = request.leader_id
+                return pb2.ResultWithTerm(term=state['term'], result=True)
+
+            failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
+            if request.term < state['term']:
+                return failure_reply
+            elif request.prev_log_index > len(state['logs']) - 1:
+                return failure_reply
+            elif request.term == state['term']:
+                state['leader_id'] = request.leader_id
+
+                success_reply = pb2.ResultWithTerm(term=state['term'], result=True)
+
+                entries = []
+                for entry in request.entries:
+                    entries.append((entry.term, ('set', entry.key, entry.value)))
+
+                start_idx = request.prev_log_index + 1
+
+                logs_start = state['logs'][:start_idx]
+                logs_middle = state['logs'][start_idx: start_idx + len(entries)]
+                logs_end = state['logs'][start_idx + len(entries):]
+
+                has_conflicts = False
+                for i in range(0, len(logs_middle)):
+                    if logs_middle[i][0] != entries[i][0]:
+                        has_conflicts = True
+                        break
+
+                if has_conflicts:
+                    state['logs'] = logs_start + entries
+                else:
+                    state['logs'] = logs_start + entries + logs_end
+
+                if request.leader_commit > state['commit_idx']:
+                    state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
+
+                    while state['commit_idx'] > state['last_applied']:
+                        state['last_applied'] += 1
+                        _, key, value = state['logs'][state['last_applied']][1]
+                        state['hash_table'][key] = value
+
+                return success_reply
+
+            return failure_reply
+
+    def GetLeader(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        if state.get('leader_id') is None:
+            return
+
+        (host, port, _) = state['nodes'][state['leader_id']]
+        return pb2.GetLeaderReply(leader_id=state['leader_id'], address=f"{host}:{port}")
+
+    def Suspend(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        is_suspended = True
+        threading.Timer(request.period, wake_up_after_suspend).start()
+        return pb2.EmptyMessage()
+
+    def GetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        with state_lock:
+            value = state['hash_table'].get(request.key)
+            success = (value is not None)
+            value = value if success else "None"
+
+            return pb2.GetReply(success=success, value=value)
+
+    def SetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        if state['type'] != 'leader':
+            if state['leader_id'] == -1:
+                return pb2.SetReply(success=False)
+
+            ensure_connected(state['leader_id'])
+
+            (_, _, stub) = state['nodes'][state['leader_id']]
+            try:
+                resp = stub.SetVal(pb2.SetRequest(key=request.key, value=request.value), timeout=0.100)
+            except:
+                return pb2.SetReply(success=False)
+
+            return resp
+
+        with state_lock:
+            state['logs'].append((state['term'], ('set', request.key, request.value)))
+            return pb2.SetReply(success=True)
+
+
+#
+# other
+#
+
+def ensure_connected(id):
+    if id == state['id']:
+        raise "Shouldn't try to connect to itself"
+    (host, port, stub) = state['nodes'][id]
+    if not stub:
+        channel = grpc.insecure_channel(f"{host}:{port}")
+        stub = pb2_grpc.RaftNodeStub(channel)
+        state['nodes'][id] = (host, port, stub)
+
+
+def reopen_connection(id):
+    if id == state['id']:
+        raise "Shouldn't try to connect to itself"
+    (host, port, stub) = state['nodes'][id]
+    channel = grpc.insecure_channel(f"{host}:{port}")
+    stub = pb2_grpc.RaftNodeStub(channel)
+    state['nodes'][id] = (host, port, stub)
+
+
+def start_server(state):
+    (ip, port, _stub) = state['nodes'][state['id']]
+    server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
+    pb2_grpc.add_RaftNodeServicer_to_server(Handler(), server)
+    server.add_insecure_port(f"{ip}:{port}")
     server.start()
+    return server
+
+
+def main(id, nodes):
+    election_th = threading.Thread(target=election_timeout_thread)
+    election_th.start()
+
+    heartbeat_threads = []
+    for node_id in nodes:
+        if id != node_id:
+            heartbeat_events[node_id] = threading.Event()
+            t = threading.Thread(target=heartbeat_thread, args=(node_id,))
+            t.start()
+            heartbeat_threads.append(t)
+
+    state['id'] = id
+    state['nodes'] = nodes
+    state['type'] = 'follower'
+    state['term'] = 0
+    state['next_idx'] = [0] * len(state['nodes'])
+    state['match_idx'] = [-1] * len(state['nodes'])
+
+    log_replication_th = threading.Thread(target=replicate_logs)
+    log_replication_th.start()
+
+    server = start_server(state)
+    (host, port, _) = nodes[id]
+    print(f"The server starts at {host}:{port}")
+    print(f"I am a follower. Term: 0")
+    select_new_election_timeout_duration()
+    reset_election_campaign_timer()
 
     try:
         server.wait_for_termination()
-    except KeyboardInterrupt as keys:
-        terminate(f'{keys} was pressed, terminating the server...')
+    except KeyboardInterrupt:
+        global is_terminating
+        is_terminating = True
+        server.stop(0)
+        print("Shutting down")
 
+        election_th.join()
+        [t.join() for t in heartbeat_threads]
 
-# Main
 
 if __name__ == '__main__':
-    signal.signal(signal.SIGINT, signal.default_int_handler)
-
-    input_id = -1
-    try:
-        input_id = int(sys.argv[1])
-    except:
-        terminate("Specify arguments in the following order: \n \
-                    python3 server.py ID")
-
-    start_server(input_id)
+    [id] = sys.argv[1:]
+    nodes = None
+    with open("config.conf", 'r') as f:
+        line_parts = map(lambda line: line.split(), f.read().strip().split("\n"))
+        nodes = dict([(int(p[0]), (p[1], int(p[2]), None)) for p in line_parts])
+        print(list(nodes))
+    main(int(id), nodes)
