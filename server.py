@@ -259,12 +259,11 @@ def replicate_logs_thread(id_to_request):
         ), timeout=0.100)
 
         with state_lock:
-            print(f"Get result from {id_to_request} = {resp.result}")
             if resp.result:
                 state['next_idx'][id_to_request] = len(state['logs'])
                 state['match_idx'][id_to_request] = len(state['logs']) - 1
             else:
-                state['next_idx'][id_to_request] -= 1
+                state['next_idx'][id_to_request] = max(state['next_idx'][id_to_request] - 1, 0)
                 state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request], state['next_idx'][id_to_request] - 1)
             
     except grpc.RpcError:
@@ -275,24 +274,6 @@ def replicate_logs_thread(id_to_request):
 #
 # Logs replication
 #
-
-def print_state():
-    # return
-    print("----Current State----")
-    print(f"commit_idx: {state['commit_idx']}")
-    print(f"last_applied: {state['last_applied']}")
-    print(f"hash_table len: {len(state['hash_table'])}")
-    print(f"logs len: {len(state['logs'])}")
-    print("----End Current State----")
-
-def print_next_match_idx():
-    # return
-    print("----Next Match index----")
-    for i in range(0, len(state['nodes'])):
-        print(f"ID = {i}")
-        print(f"match_idx = {state['match_idx'][i]}")
-        print(f"next_idx = {state['next_idx'][i]}")
-    print("----End Match index----")
 
 def replicate_logs():
     while not is_terminating:
@@ -318,9 +299,6 @@ def replicate_logs():
         for thread in threads:
             thread.join()
 
-        print_next_match_idx()
-        print_state()
-
         with state_lock:
             state['replicate_vote_count'] = 0
             for i in range(0, len(state['match_idx'])):
@@ -328,15 +306,12 @@ def replicate_logs():
                     state['replicate_vote_count'] += 1
 
             if has_enough_replicate_votes():
-                print("Success commit")
                 state['commit_idx'] += 1
 
             while state['commit_idx'] > state['last_applied']:
                 state['last_applied'] += 1
                 _, key, value = state['logs'][state['last_applied']][1]
                 state['hash_table'][key] = value
-
-            print_state()
 
 #
 # gRPC server handler
@@ -366,13 +341,10 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
             if request.term < state['term']:
-                print("111")
                 return failure_reply
             elif request.last_log_index < len(state['logs']) - 1:
-                print("222")
                 return failure_reply
             elif len(state['logs']) != 0 and request.last_log_index == len(state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
-                print("333")
                 return failure_reply
             elif state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
@@ -402,16 +374,6 @@ class Handler(pb2_grpc.RaftNodeServicer):
             if is_hearbeat and request.term == state['term']:
                 state['leader_id'] = request.leader_id
                 return pb2.ResultWithTerm(term=state['term'], result=True)
-
-            if not is_hearbeat:
-                print("----Replicate Logs----")
-                print(f"term = {request.term}")
-                print(f"leader_id = {request.leader_id}")
-                print(f"prev_log_index = {request.prev_log_index}")
-                print(f"prev_log_term = {request.prev_log_term}")
-                print(f"entries = {request.entries}")
-                print(f"leader_commit = {request.leader_commit}")
-                print("----End replicate Logs----")
             
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
             if request.term < state['term']:
@@ -443,8 +405,6 @@ class Handler(pb2_grpc.RaftNodeServicer):
                     state['logs'] = logs_start + entries
                 else: 
                     state['logs'] = logs_start + entries + logs_end
-
-                print_state()
                 
                 if request.leader_commit > state['commit_idx']:
                     state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
@@ -453,8 +413,6 @@ class Handler(pb2_grpc.RaftNodeServicer):
                         state['last_applied'] += 1
                         _, key, value = state['logs'][state['last_applied']][1]
                         state['hash_table'][key] = value
-
-                print_state()
 
                 return sucess_reply
 
@@ -513,7 +471,6 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
         with state_lock:
             state['logs'].append((state['term'], ('set', request.key, request.value)))
-            print(f"Append log: {request.key} {request.value}")
             return pb2.SetReply(success=True)
 
 #
