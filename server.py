@@ -114,6 +114,14 @@ def finalize_election():
             state['leader_id'] = state['id']
             state['vote_count'] = 0
             state['voted_for_id'] = -1
+
+            for i in range(0, len(state['nodes'])):
+                if i == state['id']:
+                    continue
+
+                state['next_idx'][i] = 0
+                state['match_idx'][i] = -1
+
             start_heartbeats()
             print("Votes received")
             print(f"I am a leader. Term: {state['term']}")
@@ -253,21 +261,23 @@ def replicate_logs_thread(id_to_request):
         with state_lock:
             print(f"Get result from {id_to_request} = {resp.result}")
             if resp.result:
-                if len(entries) > 0:
-                    state['match_idx'][id_to_request] = state['next_idx'][id_to_request]
-                    state['next_idx'][id_to_request] += len(entries)
+                state['next_idx'][id_to_request] = len(state['logs'])
+                state['match_idx'][id_to_request] = len(state['logs']) - 1
             else:
                 state['next_idx'][id_to_request] -= 1
                 state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request], state['next_idx'][id_to_request] - 1)
             
     except grpc.RpcError:
-        # print(f"No connection {id_to_request}")
-        pass
+        state['next_idx'][id_to_request] = 0
+        state['match_idx'][id_to_request] = -1
+        reopen_connection(id_to_request)
+
 #
 # Logs replication
 #
 
 def print_state():
+    # return
     print("----Current State----")
     print(f"commit_idx: {state['commit_idx']}")
     print(f"last_applied: {state['last_applied']}")
@@ -276,6 +286,7 @@ def print_state():
     print("----End Current State----")
 
 def print_next_match_idx():
+    # return
     print("----Next Match index----")
     for i in range(0, len(state['nodes'])):
         print(f"ID = {i}")
@@ -311,6 +322,7 @@ def replicate_logs():
         print_state()
 
         with state_lock:
+            state['replicate_vote_count'] = 0
             for i in range(0, len(state['match_idx'])):
                 if state['match_idx'][i] > state['commit_idx']:
                     state['replicate_vote_count'] += 1
@@ -323,8 +335,6 @@ def replicate_logs():
                 state['last_applied'] += 1
                 _, key, value = state['logs'][state['last_applied']][1]
                 state['hash_table'][key] = value
-
-            state['replicate_vote_count'] = 0
 
             print_state()
 
@@ -356,10 +366,13 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
             if request.term < state['term']:
+                print("111")
                 return failure_reply
             elif request.last_log_index < len(state['logs']) - 1:
+                print("222")
                 return failure_reply
             elif len(state['logs']) != 0 and request.last_log_index == len(state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
+                print("333")
                 return failure_reply
             elif state['term'] == request.term and state['voted_for_id'] == -1:
                 become_a_follower()
