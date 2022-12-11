@@ -206,13 +206,14 @@ def heartbeat_thread(id_to_request):
 
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
+                # In case this is hearbeat send -404 as value in replicate logs params
                 resp = stub.AppendEntries(pb2.AppendRequest(
                     term=state['term'], 
                     leader_id=state['id'],
-                    prev_log_index=-1,
-                    prev_log_term=-1,
-                    entries=[],
-                    leader_commit=state['commit_idx']
+                    prev_log_index=-404, 
+                    prev_log_term=-404,
+                    entries=None,
+                    leader_commit=-404
                 ), timeout=0.100)
 
                 if (state['type'] != 'leader') or is_suspended:
@@ -238,8 +239,8 @@ def replicate_logs_thread(id_to_request):
     
     try:
         ensure_connected(id_to_request)
+        
         (_, _, stub) = state['nodes'][id_to_request]
-
         resp = stub.AppendEntries(pb2.AppendRequest(
             term=state['term'], 
             leader_id=state['id'],
@@ -252,8 +253,9 @@ def replicate_logs_thread(id_to_request):
         with state_lock:
             print(f"Get result from {id_to_request} = {resp.result}")
             if resp.result:
-                state['match_idx'][id_to_request] = state['next_idx'][id_to_request]
-                state['next_idx'][id_to_request] += len(entries)
+                if len(entries) > 0:
+                    state['match_idx'][id_to_request] = state['next_idx'][id_to_request]
+                    state['next_idx'][id_to_request] += len(entries)
             else:
                 state['next_idx'][id_to_request] -= 1
                 state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request], state['next_idx'][id_to_request] - 1)
@@ -265,11 +267,21 @@ def replicate_logs_thread(id_to_request):
 # Logs replication
 #
 
-def print_state1():
+def print_state():
+    print("----Current State----")
     print(f"commit_idx: {state['commit_idx']}")
     print(f"last_applied: {state['last_applied']}")
     print(f"hash_table len: {len(state['hash_table'])}")
     print(f"logs len: {len(state['logs'])}")
+    print("----End Current State----")
+
+def print_next_match_idx():
+    print("----Next Match index----")
+    for i in range(0, len(state['nodes'])):
+        print(f"ID = {i}")
+        print(f"match_idx = {state['match_idx'][i]}")
+        print(f"next_idx = {state['next_idx'][i]}")
+    print("----End Match index----")
 
 def replicate_logs():
     while not is_terminating:
@@ -277,8 +289,6 @@ def replicate_logs():
 
         if (state['type'] != 'leader') or is_suspended or len(state['logs']) == 0:
             continue
-        
-        # print("Replicate logs")
 
         curr_id = 0
         with state_lock:
@@ -297,6 +307,9 @@ def replicate_logs():
         for thread in threads:
             thread.join()
 
+        print_next_match_idx()
+        print_state()
+
         with state_lock:
             for i in range(0, len(state['match_idx'])):
                 if state['match_idx'][i] > state['commit_idx']:
@@ -306,14 +319,14 @@ def replicate_logs():
                 print("Success commit")
                 state['commit_idx'] += 1
 
-            print_state1()
-
             while state['commit_idx'] > state['last_applied']:
+                state['last_applied'] += 1
                 _, key, value = state['logs'][state['last_applied']][1]
                 state['hash_table'][key] = value
-                state['last_applied'] += 1
 
             state['replicate_vote_count'] = 0
+
+            print_state()
 
 #
 # gRPC server handler
@@ -364,12 +377,30 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
 
         with state_lock:
+            is_hearbeat = (
+                request.prev_log_index == -404 or \
+                request.prev_log_term  == -404 or \
+                request.leader_commit  == -404
+            )
+
             if request.term > state['term']:
                 state['term'] = request.term
                 become_a_follower()
+            if is_hearbeat and request.term == state['term']:
+                state['leader_id'] = request.leader_id
+                return pb2.ResultWithTerm(term=state['term'], result=True)
+
+            if not is_hearbeat:
+                print("----Replicate Logs----")
+                print(f"term = {request.term}")
+                print(f"leader_id = {request.leader_id}")
+                print(f"prev_log_index = {request.prev_log_index}")
+                print(f"prev_log_term = {request.prev_log_term}")
+                print(f"entries = {request.entries}")
+                print(f"leader_commit = {request.leader_commit}")
+                print("----End replicate Logs----")
             
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
-            has_new_entries = (len(request.entries) > 0)
             if request.term < state['term']:
                 return failure_reply
             elif request.prev_log_index > len(state['logs']) - 1:
@@ -400,22 +431,17 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 else: 
                     state['logs'] = logs_start + entries + logs_end
 
+                print_state()
+                
                 if request.leader_commit > state['commit_idx']:
-                    print("-----")
-                    print(f"Leader commit: {request.leader_commit}")
-                    print_state1()
-                    print("-----")
-
                     state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
 
                     while state['commit_idx'] > state['last_applied']:
+                        state['last_applied'] += 1
                         _, key, value = state['logs'][state['last_applied']][1]
                         state['hash_table'][key] = value
-                        state['last_applied'] += 1
 
-                    print("-----")
-                    print_state1()
-                    print("-----")
+                print_state()
 
                 return sucess_reply
 
